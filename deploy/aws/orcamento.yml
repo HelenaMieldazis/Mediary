@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Mediary - orcamento mensal com alertas por e-mail. Crie esta stack ANTES de qualquer
+  outro recurso. Os alertas ignoram os creditos promocionais (IncludeCredit = false),
+  para avisar sobre o consumo real mesmo enquanto os creditos pagam a conta.
+
+Parameters:
+  Email:
+    Type: String
+    Description: E-mail que recebe os alertas (confirme a assinatura que a AWS enviar).
+  LimiteMensalUSD:
+    Type: Number
+    Default: 10
+    Description: Valor mensal de referencia, em dolares.
+
+Resources:
+  Orcamento:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: mediary-mensal
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref LimiteMensalUSD, Unit: USD}
+        CostTypes:
+          IncludeCredit: false
+          IncludeRefund: false
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 50, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref Email}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref Email}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref Email}]
+        - Notification: {NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref Email}]
