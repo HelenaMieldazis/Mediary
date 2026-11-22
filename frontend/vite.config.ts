@@ -49,17 +49,12 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/.*\/api\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 },
-              networkTimeoutSeconds: 10,
-            },
-          },
-        ],
+        // Respostas da API (/api/*) contêm dados de saúde e NUNCA devem ir
+        // para o Cache Storage: não há regra de runtimeCaching para elas,
+        // então o service worker não intercepta essas requisições.
+        // Também impede que uma navegação direta para /api/* receba o
+        // index.html do fallback de SPA.
+        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],

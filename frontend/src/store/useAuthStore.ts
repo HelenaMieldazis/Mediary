@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User } from '../features/auth/authSchema';
 import { authService } from '../api/auth';
+import { limparCacheApi } from '../utils/limparCacheApi';
 
 interface AuthState {
   user: User | null;
@@ -30,8 +31,12 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    await authService.logout();
-    set({ user: null, isAuthenticated: false });
+    try {
+      await authService.logout();
+    } finally {
+      set({ user: null, isAuthenticated: false });
+      await limparCacheApi();
+    }
   },
 
   checkAuth: async () => {
