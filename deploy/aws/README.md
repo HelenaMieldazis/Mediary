@@ -91,6 +91,7 @@ Além disso: o domínio (se você ainda não tiver um; ≈ R$ 40/ano em .com.br)
 | `docker-compose.prod.yml`, `Caddyfile` | Backend + proxy HTTPS na EC2 |
 | `servidor/atualizar.sh` | Na EC2: baixa o código, lê os segredos do Parameter Store, faz build e sobe |
 | `servidor/criar_usuario_app.sh` | Na EC2: cria o usuário do banco do app (só acesso ao banco `mediary`) |
+| `servidor/mysql.sh` | Na EC2: abre o cliente MySQL no RDS com TLS (seção 6) |
 | `../../.github/workflows/deploy-aws.yml` | Deploy manual pelo GitHub Actions (OIDC, sem chaves guardadas) |
 
 ---
@@ -249,6 +250,7 @@ e o papel só pode mandar a EC2 rodar o `atualizar.sh`.
 - [ ] RDS: em *RDS > mediary-mysql > Connectivity*, *Publicly accessible = No*
 - [ ] CloudWatch > *Log groups* > `/mediary/prod`: retenção de 7 dias, sem senhas, tokens nem descrições de sintomas
 - [ ] *Billing > Budgets*: orçamento `mediary-mensal` ativo e e-mail confirmado
+- [ ] `sudo /opt/mediary/deploy/aws/servidor/mysql.sh app -e "SELECT COUNT(*) FROM Usuarios"` mostra o mesmo total do Supabase
 
 ## 5. Operação
 
@@ -258,3 +260,48 @@ e o papel só pode mandar a EC2 rodar o `atualizar.sh`.
 - **Trocar um segredo:** `salvar NOME SecureString` (3.5) e rodar o `atualizar.sh` de novo.
 - **Pausar o custo:** parar a EC2 e o RDS reduz o custo, mas o RDS religa sozinho após 7 dias e o IP fixo continua sendo cobrado.
 - **Apagar tudo:** antes, desligue *Deletion protection* no RDS. Ao apagar a stack, um snapshot final do banco é mantido (e cobrado) até você apagá-lo.
+
+## 6. Rodar comandos direto no MySQL do RDS
+
+O RDS não tem acesso público: só a EC2 do backend alcança a porta 3306. Você entra **pela EC2**,
+sem abrir nenhuma porta, de um destes dois jeitos.
+
+> O banco tem dados de saúde. Prefira o usuário do app, evite `SELECT *` em tabelas de sintomas
+> sem necessidade e não ative a gravação de sessões do Session Manager (ela guardaria a saída das consultas).
+
+### 6.1 Pelo navegador (Session Manager)
+Console > **EC2** > `mediary-backend` > *Connect* > **Session Manager** > *Connect*:
+```bash
+sudo /opt/mediary/deploy/aws/servidor/mysql.sh
+```
+Isso abre o cliente `mysql>` como o usuário do app (`mediary_app`), no banco `mediary`, com TLS verificado.
+As senhas vêm do Parameter Store e não aparecem na tela.
+
+Outros usos:
+```bash
+sudo /opt/mediary/deploy/aws/servidor/mysql.sh app -e "SELECT COUNT(*) FROM Usuarios; SELECT COUNT(*) FROM Sintomas;"
+```
+```bash
+sudo /opt/mediary/deploy/aws/servidor/mysql.sh app < /opt/mediary/backend/schema.sql
+```
+```bash
+sudo /opt/mediary/deploy/aws/servidor/mysql.sh admin
+```
+O `admin` é o usuário mestre do RDS: use só para administração (usuários, `GRANT`).
+
+### 6.2 Do seu computador (MySQL Workbench, DBeaver etc.), por túnel
+Pré-requisitos no seu computador: [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html),
+o [plugin do Session Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+e credenciais do `mediary-admin` configuradas (`aws configure sso` ou chaves de acesso).
+
+1. Abra o túnel (deixe o terminal aberto). Troque `ID_DA_INSTANCIA` e `ENDERECO_DO_BANCO` pelos *Outputs* da stack:
+   ```bash
+   aws ssm start-session --region sa-east-1 --target ID_DA_INSTANCIA --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host="ENDERECO_DO_BANCO",portNumber="3306",localPortNumber="13306"
+   ```
+2. No Workbench: *Hostname* `127.0.0.1`, *Port* `13306`, *Username* `mediary_app` (senha: valor de
+   `/mediary/prod/DATABASE_PASSWORD` no Parameter Store). Na aba *SSL*: *Use SSL* = **Require and Verify CA**
+   e *SSL CA File* = o arquivo [global-bundle.pem](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem)
+   baixado. (Não use "Verify Identity": pelo túnel o nome do host é `127.0.0.1`, que não está no certificado.)
+3. Feche o terminal do passo 1 quando terminar: o túnel é encerrado.
+
+Os dados não passam pela internet aberta: o túnel é criptografado até a EC2, e de lá até o RDS a conexão é TLS.
