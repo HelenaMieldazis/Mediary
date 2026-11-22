@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { limparCacheApi } from '../utils/limparCacheApi';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -24,6 +25,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('mediary_token');
+      void limparCacheApi();
     }
     return Promise.reject(error);
   }
