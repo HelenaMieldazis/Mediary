@@ -1,14 +1,18 @@
-import psycopg2
 import os
 import re
+import time
 import jwt
 import logging
+import pymysql
+from pymysql.cursors import DictCursor
 from dotenv import load_dotenv
 from flask import Flask
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from functools import wraps
-from datetime import datetime, date, timedelta
-from psycopg2.extras import RealDictCursor
+from datetime import datetime, date, timedelta, timezone
+from urllib.parse import urlsplit, unquote, parse_qs
+from zoneinfo import ZoneInfo
 from flask import request, jsonify, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -18,12 +22,17 @@ from relatorio_pdf import gerar_pdf_relatorio
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.environ.get("SECRET_KEY")
+# "producao" endurece o app: exige SECRET_KEY e não libera localhost no CORS.
+EM_PRODUCAO = os.environ.get("AMBIENTE", "").strip().lower() in ("producao", "production", "prod")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mediary")
 
 if not DATABASE_URL:
     logger.warning("DATABASE_URL não definida. Configure a variável de ambiente antes de usar em produção.")
+
+if not SECRET_KEY and EM_PRODUCAO:
+    raise RuntimeError("SECRET_KEY é obrigatória com AMBIENTE=producao.")
 
 if not SECRET_KEY:
     # Em desenvolvimento local, usamos uma chave fixa (não aleatória) para não travar o app
@@ -39,7 +48,21 @@ if not SECRET_KEY:
     import hashlib
     SECRET_KEY = hashlib.sha256(b"mediary-dev-fallback-key-do-not-use-in-production").hexdigest()
 
+class _JSONProvider(DefaultJSONProvider):
+    """Datas saem em ISO sem fuso ('2026-11-15T20:00:00'), que o navegador lê como
+    hora local. O padrão do Flask ('Sun, 15 Nov 2026 20:00:00 GMT') fazia o
+    navegador converter de GMT para o fuso do Brasil e mostrar 3 h a menos."""
+    @staticmethod
+    def default(o):
+        if isinstance(o, datetime):
+            return o.replace(tzinfo=None).isoformat(timespec="seconds")
+        if isinstance(o, date):
+            return o.isoformat()
+        return DefaultJSONProvider.default(o)
+
+
 app = Flask(__name__)
+app.json = _JSONProvider(app)
 app.config["SECRET_KEY"] = SECRET_KEY
 
 # Mensagem genérica usada sempre que um erro interno não pode ser exposto ao usuário.
@@ -48,8 +71,14 @@ MSG_ERRO_BANCO = "Não foi possível completar a operação no momento. Tente no
 
 
 def log_erro(contexto, excecao):
-    """Loga o erro completo no servidor sem nunca expor detalhes internos ao cliente."""
-    logger.error("Erro em %s: %s", contexto, excecao)
+    """Loga o erro no servidor sem nunca expor detalhes internos ao cliente.
+    Para erros do banco registramos só o tipo e o código: a mensagem do MySQL pode
+    conter dados (ex.: "Duplicate entry 'fulano@email' ..."), que não vão para o log."""
+    if isinstance(excecao, pymysql.MySQLError):
+        codigo = excecao.args[0] if excecao.args else "?"
+        logger.error("Erro em %s: %s (código MySQL %s)", contexto, type(excecao).__name__, codigo)
+    else:
+        logger.error("Erro em %s: %s: %s", contexto, type(excecao).__name__, str(excecao)[:300])
 
 
 def validar_senha(senha: str):
@@ -68,7 +97,9 @@ def validar_senha(senha: str):
 
 _frontend_url = os.environ.get("FRONTEND_URL", "")
 _allowed_origins = [o.strip() for o in _frontend_url.split(",") if o.strip()]
-_allowed_origins += ["http://localhost", "http://localhost:80", "http://127.0.0.1"]
+if not EM_PRODUCAO:
+    _allowed_origins += ["http://localhost", "http://localhost:80", "http://127.0.0.1",
+                         "http://localhost:5173"]
 
 CORS(
     app,
@@ -102,59 +133,141 @@ def handle_uncaught_exception(e):
     log_erro("exceção não tratada", e)
     return jsonify({"error": MSG_ERRO_INTERNO}), 500
 
-# ── DB ────────────────────────────────────────────────────────────────────────
+# ── DB (MySQL 8) ──────────────────────────────────────────────────────────────
+
+def _config_banco(url=None, senha=None):
+    """Lê DATABASE_URL no formato mysql://usuario:senha@host:3306/banco.
+
+    * Caracteres especiais na senha devem vir codificados na URL (ex.: '@' -> %40,
+      '/' -> %2F, '#' -> %23). Use urllib.parse.quote(senha, safe='').
+    * Alternativa: deixe a senha fora da URL e defina DATABASE_PASSWORD, que tem
+      prioridade e é usada sem nenhuma codificação.
+    * Opcional: ?ssl_ca=/caminho/ca.pem na URL ou DATABASE_SSL_CA para exigir TLS
+      (ex.: certificado da AWS RDS).
+    """
+    url = url if url is not None else (os.environ.get("DATABASE_URL") or "")
+    partes = urlsplit(url)
+    if partes.scheme not in ("mysql", "mysql+pymysql"):
+        raise ValueError("DATABASE_URL deve começar com mysql://")
+    query = parse_qs(partes.query)
+    senha = senha if senha is not None else os.environ.get("DATABASE_PASSWORD")
+    cfg = {
+        "host": partes.hostname or "localhost",
+        "port": partes.port or 3306,
+        "user": unquote(partes.username or ""),
+        "password": senha if senha else unquote(partes.password or ""),
+        "database": unquote(partes.path.lstrip("/")),
+        "charset": "utf8mb4",
+        "collation": "utf8mb4_unicode_ci",
+        "connect_timeout": 10,
+        "autocommit": False,
+        # A sessão usa UTC, como o Postgres do Supabase: NOW()/CURRENT_TIMESTAMP
+        # gravam o mesmo horário de antes. O "dia" da cota da IA é calculado à parte,
+        # em America/Sao_Paulo.
+        "init_command": "SET time_zone = '+00:00'",
+    }
+    ca = (query.get("ssl_ca") or [None])[0] or os.environ.get("DATABASE_SSL_CA")
+    if ca:
+        cfg["ssl"] = {"ca": ca}
+    return cfg
+
 
 def get_db():
-    conn = psycopg2.connect(dsn=DATABASE_URL)
-    conn.autocommit = False
-    return conn
+    return pymysql.connect(**_config_banco())
+
+
+ERRO_MYSQL_COLUNA_DUPLICADA = 1060
+
+
+def _coluna_existe(cursor, tabela, coluna):
+    cursor.execute("""
+        SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+    """, (tabela, coluna))
+    return cursor.fetchone() is not None
+
+
+def _adicionar_coluna(cursor, tabela, coluna, definicao):
+    """ALTER TABLE ... ADD COLUMN idempotente (o MySQL 8 não tem ADD COLUMN IF NOT EXISTS)."""
+    if _coluna_existe(cursor, tabela, coluna):
+        return
+    try:
+        cursor.execute(f"ALTER TABLE `{tabela}` ADD COLUMN `{coluna}` {definicao}")
+    except pymysql.err.OperationalError as e:
+        # Dois workers do gunicorn podem tentar ao mesmo tempo: o segundo recebe 1060.
+        if e.args and e.args[0] == ERRO_MYSQL_COLUNA_DUPLICADA:
+            return
+        raise
+
+
+_OPCOES_TABELA = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+
 
 def init_db():
     conn = get_db()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Usuarios (
-            id SERIAL PRIMARY KEY,
-            nome TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            senha_hash TEXT NOT NULL,
-            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Sintomas (
-            id SERIAL PRIMARY KEY,
-            usuario_id INTEGER NOT NULL,
-            tipo TEXT NOT NULL,
-            subtipo TEXT,
-            descricao TEXT,
-            inicio TIMESTAMP NOT NULL,
-            fim TIMESTAMP,
-            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (usuario_id) REFERENCES Usuarios(id) ON DELETE CASCADE
-        )
-    """)
-    # ── IA ──
-    # Consentimento do usuário para enviar os dados ao serviço de IA (NULL = não consentiu).
-    cursor.execute("ALTER TABLE Usuarios ADD COLUMN IF NOT EXISTS ia_consentimento_em TIMESTAMP")
-    # Contador diário de uso da IA por usuário (limita custo e abuso). Não guarda conteúdo.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS IaUso (
-            usuario_id INTEGER NOT NULL REFERENCES Usuarios(id) ON DELETE CASCADE,
-            dia DATE NOT NULL,
-            recurso TEXT NOT NULL,
-            total INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (usuario_id, dia, recurso)
-        )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS Usuarios (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                nome VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                senha_hash VARCHAR(255) NOT NULL,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_usuarios_email (email)
+            ) {_OPCOES_TABELA}
+        """)
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS Sintomas (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                tipo VARCHAR(100) NOT NULL,
+                subtipo VARCHAR(100) NULL,
+                descricao TEXT NULL,
+                inicio DATETIME NOT NULL,
+                fim DATETIME NULL,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                KEY ix_sintomas_usuario_inicio (usuario_id, inicio),
+                CONSTRAINT fk_sintomas_usuario FOREIGN KEY (usuario_id)
+                    REFERENCES Usuarios(id) ON DELETE CASCADE
+            ) {_OPCOES_TABELA}
+        """)
+        # ── IA ──
+        # Consentimento do usuário para enviar os dados ao serviço de IA (NULL = não consentiu).
+        _adicionar_coluna(cursor, "Usuarios", "ia_consentimento_em", "DATETIME NULL")
+        # Contador diário de uso da IA por usuário (limita custo e abuso). Não guarda conteúdo.
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS IaUso (
+                usuario_id INT NOT NULL,
+                dia DATE NOT NULL,
+                recurso VARCHAR(40) NOT NULL,
+                total INT NOT NULL DEFAULT 0,
+                PRIMARY KEY (usuario_id, dia, recurso),
+                CONSTRAINT fk_iauso_usuario FOREIGN KEY (usuario_id)
+                    REFERENCES Usuarios(id) ON DELETE CASCADE
+            ) {_OPCOES_TABELA}
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
-try:
-    init_db()
-except Exception as e:
-    log_erro("init_db", e)
+
+def _init_db_com_tentativas(tentativas=5, espera=3):
+    """O banco pode ainda estar subindo (docker compose, reinício da instância)."""
+    for n in range(1, tentativas + 1):
+        try:
+            init_db()
+            return True
+        except Exception as e:
+            log_erro(f"init_db (tentativa {n}/{tentativas})", e)
+            if n < tentativas:
+                time.sleep(espera)
+    return False
+
+
+if DATABASE_URL and os.environ.get("MEDIARY_PULAR_INIT_DB") != "1":
+    _init_db_com_tentativas()
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
@@ -162,7 +275,7 @@ def create_token(usuario_id, nome):
     payload = {
         "usuario_id": usuario_id,
         "nome": nome,
-        "exp": datetime.utcnow() + timedelta(days=30)
+        "exp": datetime.now(timezone.utc) + timedelta(days=30)
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -195,7 +308,7 @@ def login_required(f):
 def me():
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT id, nome, email FROM Usuarios WHERE id = %s",
                        (request.current_user["usuario_id"],))
         row = cursor.fetchone()
@@ -217,7 +330,7 @@ def login():
         return jsonify({"error": "Informe e-mail e senha"}), 400
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT id, nome, email, senha_hash FROM Usuarios WHERE email = %s", (email,))
         row = cursor.fetchone()
         conn.close()
@@ -247,13 +360,13 @@ def cadastro():
         return jsonify({"error": erro_senha}), 400
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("INSERT INTO Usuarios (nome, email, senha_hash) VALUES (%s, %s, %s)",
                        (nome, email, generate_password_hash(senha)))
         conn.commit()
         conn.close()
         return jsonify({"message": "Conta criada com sucesso!"}), 201
-    except psycopg2.IntegrityError:
+    except pymysql.err.IntegrityError:
         return jsonify({"error": "E-mail já cadastrado"}), 400
     except Exception as e:
         log_erro("cadastro", e)
@@ -264,19 +377,21 @@ def cadastro():
 @login_required
 def update_usuario():
     data = request.json or {}
-    nome = data.get("nome")
-    email = data.get("email")
+    nome = (data.get("nome") or "").strip()
+    # Mesmo tratamento do cadastro/login: sem isso, quem trocava o e-mail para
+    # "Fulano@X.com" não conseguia mais entrar (o login procura em minúsculas).
+    email = (data.get("email") or "").strip().lower()
     if not nome or not email:
         return jsonify({"error": "Nome e e-mail são obrigatórios"}), 400
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("UPDATE Usuarios SET nome=%s, email=%s WHERE id=%s",
                        (nome, email, request.current_user["usuario_id"]))
         conn.commit()
         conn.close()
         return jsonify({"message": "Perfil atualizado com sucesso", "nome": nome, "email": email})
-    except psycopg2.IntegrityError:
+    except pymysql.err.IntegrityError:
         return jsonify({"error": "Este e-mail já está em uso por outro usuário"}), 400
     except Exception as e:
         log_erro("update_usuario", e)
@@ -296,7 +411,7 @@ def update_senha():
         return jsonify({"error": erro_senha}), 400
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT senha_hash FROM Usuarios WHERE id = %s",
                        (request.current_user["usuario_id"],))
         row = cursor.fetchone()
@@ -320,37 +435,70 @@ def logout():
 
 # ── Sintomas ──────────────────────────────────────────────────────────────────
 
+def _intervalo_mes(ano, mes):
+    """[primeiro dia do mês, primeiro dia do mês seguinte) como datetime."""
+    inicio = datetime(ano, mes, 1)
+    fim = datetime(ano + 1, 1, 1) if mes == 12 else datetime(ano, mes + 1, 1)
+    return inicio, fim
+
+
+def _ano_mes_validos(ano, mes):
+    return 1900 <= ano <= 9999 and 1 <= mes <= 12
+
+
+def _parse_data_hora(valor):
+    """Aceita 'AAAA-MM-DD HH:MM[:SS]' (formato do app) ou ISO 8601 com 'T' (e 'Z' ou
+    fuso opcionais). Devolve datetime SEM fuso, guardando a hora exatamente como veio,
+    igual o Postgres fazia numa coluna TIMESTAMP (ele ignorava o fuso do texto).
+    Lança ValueError se o formato for inválido."""
+    if isinstance(valor, datetime):
+        return valor.replace(tzinfo=None)
+    if not isinstance(valor, str) or not valor.strip():
+        raise ValueError("data vazia")
+    v = valor.strip()
+    if "T" in v:
+        return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None, microsecond=0)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(v, fmt)
+        except ValueError:
+            continue
+    raise ValueError("formato inválido")
+
+
 @app.route("/api/sintomas/calendario")
 @login_required
 def api_calendario_info():
-    ano = int(request.args.get("ano", date.today().year))
-    mes = int(request.args.get("mes", date.today().month))
+    try:
+        ano = int(request.args.get("ano", date.today().year))
+        mes = int(request.args.get("mes", date.today().month))
+    except ValueError:
+        return jsonify({"error": "Mês ou ano inválido"}), 400
+    if not _ano_mes_validos(ano, mes):
+        return jsonify({"error": "Mês ou ano inválido"}), 400
+    ini_mes, prox_mes = _intervalo_mes(ano, mes)
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
+        # Mesma regra de antes (TO_CHAR(inicio,'YYYY-MM') <= mês e fim >= mês),
+        # escrita com intervalos para usar o índice (usuario_id, inicio).
         cursor.execute("""
             SELECT inicio, fim FROM Sintomas
             WHERE usuario_id = %s
-            AND (TO_CHAR(inicio, 'YYYY-MM') <= %s
-                AND (fim IS NULL OR TO_CHAR(fim, 'YYYY-MM') >= %s))
-        """, (request.current_user["usuario_id"], f"{ano}-{mes:02d}", f"{ano}-{mes:02d}"))
+            AND inicio < %s
+            AND (fim IS NULL OR fim >= %s)
+        """, (request.current_user["usuario_id"], prox_mes, ini_mes))
         rows = cursor.fetchall()
+        conn.close()
         calendario = {}
         for row in rows:
-            ini_str = row["inicio"].strftime("%Y-%m-%d")
-            fim_str = row["fim"].strftime("%Y-%m-%d") if row["fim"] else ini_str
-            try:
-                ini_dt = datetime.strptime(ini_str, "%Y-%m-%d").date()
-                fim_dt = datetime.strptime(fim_str, "%Y-%m-%d").date()
-                curr = ini_dt
-                while curr <= fim_dt:
-                    if curr.year == ano and curr.month == mes:
-                        d_str = curr.strftime("%Y-%m-%d")
-                        calendario[d_str] = calendario.get(d_str, 0) + 1
-                    curr += timedelta(days=1)
-            except Exception:
-                continue
-        conn.close()
+            ini_dt = row["inicio"].date()
+            fim_dt = row["fim"].date() if row["fim"] else ini_dt
+            curr = max(ini_dt, ini_mes.date())
+            while curr <= fim_dt and curr < prox_mes.date():
+                d_str = curr.strftime("%Y-%m-%d")
+                calendario[d_str] = calendario.get(d_str, 0) + 1
+                curr += timedelta(days=1)
         return jsonify(calendario)
     except Exception as e:
         log_erro("api_calendario_info", e)
@@ -364,17 +512,20 @@ def api_sintomas_dia():
     if not data_sel:
         return jsonify({"error": "Data não informada"}), 400
     try:
+        dia = datetime.strptime(data_sel.strip(), "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "Data inválida. Use o formato AAAA-MM-DD."}), 400
+    dia_seguinte = dia + timedelta(days=1)
+    try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("""
             SELECT id, tipo, subtipo, descricao, inicio, fim FROM Sintomas
             WHERE usuario_id = %s
-            AND ((fim IS NULL AND TO_CHAR(inicio, 'YYYY-MM-DD') = %s)
-                OR (fim IS NOT NULL
-                    AND TO_CHAR(inicio, 'YYYY-MM-DD') <= %s
-                    AND TO_CHAR(fim, 'YYYY-MM-DD') >= %s))
+            AND ((fim IS NULL AND inicio >= %s AND inicio < %s)
+                OR (fim IS NOT NULL AND inicio < %s AND fim >= %s))
             ORDER BY inicio
-        """, (request.current_user["usuario_id"], data_sel, data_sel, data_sel))
+        """, (request.current_user["usuario_id"], dia, dia_seguinte, dia_seguinte, dia))
         sintomas = cursor.fetchall()
         conn.close()
         return jsonify(sintomas)
@@ -398,28 +549,30 @@ def api_adicionar_sintoma():
         agora = datetime.now()
         um_ano_atras = agora - timedelta(days=365)
         try:
-            ini_dt = datetime.fromisoformat(inicio.replace('Z', '+00:00')) if 'T' in inicio else datetime.strptime(inicio, "%Y-%m-%d %H:%M:%S")
+            ini_dt = _parse_data_hora(inicio)
         except ValueError:
             return jsonify({"error": "Formato de data de início inválido"}), 400
-        if ini_dt.replace(tzinfo=None) > agora + timedelta(minutes=5):
+        if ini_dt > agora + timedelta(minutes=5):
             return jsonify({"error": "A data de início não pode ser futura"}), 400
-        if ini_dt.replace(tzinfo=None) < um_ano_atras:
+        if ini_dt < um_ano_atras:
             return jsonify({"error": "O registro é limitado a no máximo 1 ano atrás"}), 400
+        fim_dt = None
         if fim:
             try:
-                fim_dt = datetime.fromisoformat(fim.replace('Z', '+00:00')) if 'T' in fim else datetime.strptime(fim, "%Y-%m-%d %H:%M:%S")
+                fim_dt = _parse_data_hora(fim)
             except ValueError:
                 return jsonify({"error": "Formato de data de fim inválido"}), 400
-            if fim_dt.replace(tzinfo=None) < ini_dt.replace(tzinfo=None):
+            if fim_dt < ini_dt:
                 return jsonify({"error": "A data de término não pode ser anterior à de início"}), 400
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute(
             "INSERT INTO Sintomas (usuario_id, tipo, subtipo, descricao, inicio, fim) VALUES (%s, %s, %s, %s, %s, %s)",
-            (request.current_user["usuario_id"], tipo, subtipo, descricao, inicio, fim))
+            (request.current_user["usuario_id"], tipo, subtipo, descricao, ini_dt, fim_dt))
+        novo_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        return jsonify({"message": "Sintoma adicionado com sucesso"}), 201
+        return jsonify({"message": "Sintoma adicionado com sucesso", "id": novo_id}), 201
     except Exception as e:
         log_erro("api_adicionar_sintoma", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
@@ -432,7 +585,7 @@ def api_sintoma_detail(sintoma_id):
     if request.method == "DELETE":
         try:
             conn = get_db()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor = conn.cursor(DictCursor)
             cursor.execute("DELETE FROM Sintomas WHERE id=%s AND usuario_id=%s", (sintoma_id, uid))
             excluido = cursor.rowcount > 0
             conn.commit()
@@ -444,48 +597,60 @@ def api_sintoma_detail(sintoma_id):
             log_erro("api_sintoma_detail (DELETE)", e)
             return jsonify({"error": MSG_ERRO_BANCO}), 500
     data = request.json or {}
+    conn = None
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT * FROM Sintomas WHERE id=%s AND usuario_id=%s", (sintoma_id, uid))
         sintoma_atual = cursor.fetchone()
         if not sintoma_atual:
-            conn.close()
             return jsonify({"error": "Sintoma não encontrado"}), 404
-        tipo      = data.get("tipo", sintoma_atual["tipo"])
+        tipo      = data.get("tipo") or sintoma_atual["tipo"]
         subtipo   = data.get("subtipo", sintoma_atual["subtipo"])
         descricao = data.get("descricao", sintoma_atual["descricao"])
-        inicio    = data.get("inicio", sintoma_atual["inicio"])
-        fim       = data.get("fim", sintoma_atual["fim"])
+        try:
+            inicio = _parse_data_hora(data.get("inicio") or sintoma_atual["inicio"])
+        except ValueError:
+            return jsonify({"error": "Formato de data de início inválido"}), 400
+        fim = data.get("fim", sintoma_atual["fim"])
+        try:
+            fim = _parse_data_hora(fim) if fim else None
+        except ValueError:
+            return jsonify({"error": "Formato de data de fim inválido"}), 400
+        if fim and fim < inicio:
+            return jsonify({"error": "A data de término não pode ser anterior à de início"}), 400
         cursor.execute("""UPDATE Sintomas SET tipo=%s, subtipo=%s, descricao=%s,
                          inicio=%s, fim=%s, atualizado_em=CURRENT_TIMESTAMP
                          WHERE id=%s AND usuario_id=%s""",
                        (tipo, subtipo, descricao, inicio, fim, sintoma_id, uid))
         conn.commit()
-        conn.close()
         return jsonify({"message": "Sintoma atualizado"})
     except Exception as e:
-        if 'conn' in locals(): conn.close()
         log_erro("api_sintoma_detail (PUT)", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.route("/api/sintomas/mes/<int:ano>/<int:mes>")
 @login_required
 def api_sintomas_mes(ano, mes):
+    if not _ano_mes_validos(ano, mes):
+        return jsonify({"error": "Mês ou ano inválido"}), 400
+    ini_mes, prox_mes = _intervalo_mes(ano, mes)
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        mes_formatado = f"{ano}-{mes:02d}"
+        cursor = conn.cursor(DictCursor)
         cursor.execute("""
             SELECT id, tipo, subtipo, descricao, inicio, fim FROM Sintomas
             WHERE usuario_id = %s
-            AND (TO_CHAR(inicio, 'YYYY-MM') <= %s
-                AND (fim IS NULL OR TO_CHAR(fim, 'YYYY-MM') >= %s))
+            AND inicio < %s
+            AND (fim IS NULL OR fim >= %s)
             ORDER BY inicio
-        """, (request.current_user["usuario_id"], mes_formatado, mes_formatado))
-        colunas = [desc[0] for desc in cursor.description]
-        data = [dict(zip(colunas, row)) for row in cursor.fetchall()]
+        """, (request.current_user["usuario_id"], prox_mes, ini_mes))
+        # Antes: dict(zip(colunas, row)) sobre um RealDictRow devolvia {"id": "id", ...}.
+        data = cursor.fetchall()
         conn.close()
         return jsonify(data)
     except Exception as e:
@@ -507,7 +672,7 @@ def buscar_sintomas_usuario(uid, data_inicio=None, data_fim=None, limite=5000):
     Sempre filtra por usuario_id: ninguém acessa registros de outro usuário."""
     conn = get_db()
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT nome, email FROM Usuarios WHERE id = %s", (uid,))
         usuario = cursor.fetchone()
         if not usuario:
@@ -589,40 +754,53 @@ def usuario_consentiu_ia(uid):
         conn.close()
 
 
-_DIA_LOCAL_SQL = "(now() AT TIME ZONE 'America/Sao_Paulo')::date"
+FUSO_COTA_IA = ZoneInfo("America/Sao_Paulo")
 
 
-def reservar_uso_ia(uid, recurso, limite):
-    """Conta +1 uso hoje, de forma atômica. False se o limite diário já foi atingido."""
+def dia_local_cota(agora_utc=None):
+    """Dia da cota da IA no fuso de São Paulo (vira à meia-noite de Brasília).
+    Calculado em Python para não depender das tabelas de fuso do MySQL."""
+    agora_utc = agora_utc or datetime.now(ZoneInfo("UTC"))
+    return agora_utc.astimezone(FUSO_COTA_IA).date()
+
+
+def reservar_uso_ia(uid, recurso, limite, dia=None):
+    """Conta +1 uso no dia, de forma atômica. Devolve o dia reservado (date) ou None
+    se o limite diário já foi atingido.
+
+    Um único INSERT ... ON DUPLICATE KEY UPDATE trava a linha (usuario_id, dia,
+    recurso) no InnoDB, então duas requisições simultâneas nunca passam do limite.
+    O 'rowcount' diz o que aconteceu (sem a flag CLIENT.FOUND_ROWS, que o PyMySQL
+    não liga): 1 = linha criada, 2 = total incrementado, 0 = já estava no limite.
+    """
     if limite <= 0:
-        return False
+        return None
+    dia = dia or dia_local_cota()
     conn = get_db()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"""
+        afetadas = cursor.execute("""
             INSERT INTO IaUso (usuario_id, dia, recurso, total)
-            VALUES (%s, {_DIA_LOCAL_SQL}, %s, 1)
-            ON CONFLICT (usuario_id, dia, recurso)
-            DO UPDATE SET total = IaUso.total + 1 WHERE IaUso.total < %s
-            RETURNING total
-        """, (uid, recurso, limite))
-        liberado = cursor.fetchone() is not None
+            VALUES (%s, %s, %s, 1)
+            ON DUPLICATE KEY UPDATE total = IF(total < %s, total + 1, total)
+        """, (uid, dia, recurso, limite))
         conn.commit()
-        return liberado
+        return dia if afetadas in (1, 2) else None
     finally:
         conn.close()
 
 
-def liberar_uso_ia(uid, recurso):
-    """Devolve o uso reservado quando a falha foi nossa (a IA não respondeu)."""
+def liberar_uso_ia(uid, recurso, dia=None):
+    """Devolve o uso reservado quando a falha foi nossa (a IA não respondeu).
+    Usa o mesmo dia da reserva, mesmo que a chamada tenha atravessado a meia-noite."""
     try:
         conn = get_db()
         try:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute("""
                 UPDATE IaUso SET total = GREATEST(total - 1, 0)
-                WHERE usuario_id = %s AND dia = {_DIA_LOCAL_SQL} AND recurso = %s
-            """, (uid, recurso))
+                WHERE usuario_id = %s AND dia = %s AND recurso = %s
+            """, (uid, dia or dia_local_cota(), recurso))
             conn.commit()
         finally:
             conn.close()
@@ -631,17 +809,18 @@ def liberar_uso_ia(uid, recurso):
 
 
 def _bloqueio_ia(uid, recurso, limite):
-    """None se pode usar a IA agora; senão, a resposta de erro pronta."""
+    """(None, dia_reservado) se pode usar a IA agora; senão (resposta de erro, None)."""
     if not ia_service.ia_configurada():
-        return jsonify({"error": "O assistente de IA não está disponível no momento."}), 503
+        return (jsonify({"error": "O assistente de IA não está disponível no momento."}), 503), None
     if not usuario_consentiu_ia(uid):
-        return jsonify({
+        return (jsonify({
             "error": "Para usar a IA, aceite primeiro o envio dos seus registros ao assistente.",
             "codigo": "consentimento_necessario",
-        }), 403
-    if not reservar_uso_ia(uid, recurso, limite):
-        return jsonify({"error": "Você atingiu o limite diário de uso da IA. Tente novamente amanhã."}), 429
-    return None
+        }), 403), None
+    dia = reservar_uso_ia(uid, recurso, limite)
+    if not dia:
+        return (jsonify({"error": "Você atingiu o limite diário de uso da IA. Tente novamente amanhã."}), 429), None
+    return None, dia
 
 
 @app.route("/api/ia/status")
@@ -665,7 +844,7 @@ def api_ia_consentimento():
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE Usuarios SET ia_consentimento_em = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
+            "UPDATE Usuarios SET ia_consentimento_em = IF(%s, CURRENT_TIMESTAMP, NULL) WHERE id = %s",
             (aceito, request.current_user["usuario_id"]))
         conn.commit()
         conn.close()
@@ -699,7 +878,7 @@ def api_ia_interpretar():
     limite = _limite_ia("IA_LIMITE_DIARIO_INTERPRETAR", 40)
 
     try:
-        bloqueio = _bloqueio_ia(uid, "interpretar", limite)
+        bloqueio, dia_reservado = _bloqueio_ia(uid, "interpretar", limite)
     except Exception as e:
         log_erro("api_ia_interpretar (bloqueio)", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
@@ -709,13 +888,13 @@ def api_ia_interpretar():
     try:
         resultado = ia_service.interpretar_mensagem(mensagem, data.get("rascunho"), historico, agora)
     except ia_service.IAIndisponivel:
-        liberar_uso_ia(uid, "interpretar")
+        liberar_uso_ia(uid, "interpretar", dia_reservado)
         return jsonify({"error": "O assistente de IA está indisponível agora. Tente de novo em instantes ou use o botão + para registrar manualmente."}), 503
     except ia_service.IASaidaInvalida:
-        liberar_uso_ia(uid, "interpretar")
+        liberar_uso_ia(uid, "interpretar", dia_reservado)
         return jsonify({"error": "Não consegui entender essa mensagem. Pode contar de outro jeito?"}), 422
     except Exception as e:
-        liberar_uso_ia(uid, "interpretar")
+        liberar_uso_ia(uid, "interpretar", dia_reservado)
         log_erro("api_ia_interpretar", e)
         return jsonify({"error": MSG_ERRO_INTERNO}), 500
     return jsonify(resultado)
@@ -744,7 +923,7 @@ def api_ia_resumo():
 
     limite = _limite_ia("IA_LIMITE_DIARIO_RESUMO", 10)
     try:
-        bloqueio = _bloqueio_ia(uid, "resumo", limite)
+        bloqueio, dia_reservado = _bloqueio_ia(uid, "resumo", limite)
     except Exception as e:
         log_erro("api_ia_resumo (bloqueio)", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
@@ -758,13 +937,13 @@ def api_ia_resumo():
             data_inicio.isoformat() if data_inicio else None,
             data_fim.isoformat() if data_fim else None)
     except ia_service.IAIndisponivel:
-        liberar_uso_ia(uid, "resumo")
+        liberar_uso_ia(uid, "resumo", dia_reservado)
         return jsonify({"error": "O assistente de IA está indisponível agora. Tente de novo em instantes."}), 503
     except ia_service.IASaidaInvalida:
-        liberar_uso_ia(uid, "resumo")
+        liberar_uso_ia(uid, "resumo", dia_reservado)
         return jsonify({"error": "Não consegui montar o resumo agora. Tente novamente."}), 422
     except Exception as e:
-        liberar_uso_ia(uid, "resumo")
+        liberar_uso_ia(uid, "resumo", dia_reservado)
         log_erro("api_ia_resumo", e)
         return jsonify({"error": MSG_ERRO_INTERNO}), 500
 

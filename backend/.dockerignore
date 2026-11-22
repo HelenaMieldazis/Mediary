@@ -1,4 +1,11 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
 .env
+*.env
+!.env.example
+*.db
+*.sql.gz
+dumps/
+tests/
