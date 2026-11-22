@@ -1,0 +1,54 @@
+# Deploy manual do backend na EC2 (Actions > "Deploy AWS" > Run workflow).
+# Sem chaves de acesso: o GitHub assume o papel "mediary-deploy-github" via OIDC,
+# e esse papel só consegue mandar a EC2 rodar deploy/aws/servidor/atualizar.sh.
+# Configure no GitHub: Settings > Environments > "producao" (com aprovação obrigatória)
+# e, nele, as variáveis AWS_DEPLOY_ROLE_ARN, AWS_REGION e AWS_INSTANCE_ID.
+name: Deploy AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch ou tag a publicar
+        default: main
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-producao
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: producao
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Rodar atualizar.sh na EC2 (SSM Run Command)
+        env:
+          INSTANCIA: ${{ vars.AWS_INSTANCE_ID }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in *[!A-Za-z0-9._/-]*) echo "ref inválida"; exit 1;; esac
+          ID=$(aws ssm send-command --instance-ids "$INSTANCIA" \
+                 --document-name AWS-RunShellScript --comment "deploy $REF" \
+                 --parameters "commands=[\"/opt/mediary/deploy/aws/servidor/atualizar.sh $REF\"],executionTimeout=[\"1200\"]" \
+                 --query Command.CommandId --output text)
+          echo "Comando $ID enviado"
+          STATUS=Pending
+          for i in $(seq 1 120); do   # até 20 min (o build na t4g.micro é lento)
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCIA" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Pending|InProgress|Delayed) continue;; *) break;; esac
+          done
+          aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCIA" \
+            --query '{status:Status,saida:StandardOutputContent,erro:StandardErrorContent}' --output json
+          test "$STATUS" = "Success"
