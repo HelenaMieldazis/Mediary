@@ -1,4 +1,30 @@
+# Ambiente de DESENVOLVIMENTO local: MySQL + backend + frontend.
+# Antes de subir:
+#   cp .env.example .env                  (senhas do MySQL local)
+#   cp backend/.env.example backend/.env  (SECRET_KEY, IA etc.)
+#   docker compose up --build
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: mediary-mysql
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-mediary}
+      MYSQL_USER: ${MYSQL_USER:-mediary}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?defina MYSQL_PASSWORD no arquivo .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?defina MYSQL_ROOT_PASSWORD no arquivo .env}
+    volumes:
+      - mediary-mysql-data:/var/lib/mysql
+    # Só na máquina local (127.0.0.1), para usar um cliente MySQL se quiser.
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
   backend:
     build: ./backend
     container_name: mediary-backend
@@ -6,6 +32,13 @@ services:
       - "5000:5000"
     env_file:
       - ./backend/.env
+    environment:
+      # Senha fora da URL: assim caracteres especiais não precisam ser codificados.
+      DATABASE_URL: mysql://${MYSQL_USER:-mediary}@mysql:3306/${MYSQL_DATABASE:-mediary}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -19,3 +52,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  mediary-mysql-data:
