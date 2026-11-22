@@ -22,73 +22,112 @@
 
 | Camada | Tecnologias |
 |---|---|
-| **Frontend** | React + TypeScript, Vite, Tailwind CSS, Zustand, Axios |
-| **Backend** | Flask (Python), Gunicorn, PyJWT |
-| **Banco de Dados** | PostgreSQL via [Supabase](https://supabase.com/) |
+| **Frontend** | React 19 + TypeScript, Vite, Tailwind CSS, Zustand, Axios (hospedado na Vercel) |
+| **Backend** | Flask (Python), Gunicorn, PyJWT, PyMySQL, ReportLab |
+| **Banco de Dados** | MySQL 8 (local: Docker; produção: AWS RDS) |
+| **IA** | API da Anthropic (Claude), só no backend |
 | **PWA** | Vite PWA Plugin (Workbox) |
-| **Infraestrutura** | Docker, Nginx, [Railway](https://railway.app/) |
+| **Infraestrutura** | Docker, Caddy (HTTPS), AWS EC2 + RDS, GitHub Actions |
 
 ## Estrutura do projeto
 
 ```
 Mediary/
-├── backend/              # API Flask
-│   ├── app.py            # Rotas e lógica da aplicação
-│   ├── requirements.txt  # Dependências Python
-│   └── Dockerfile
-├── frontend/              # SPA React
-│   ├── src/
-│   │   ├── api/          # Camada de comunicação com a API
-│   │   ├── pages/        # Páginas da aplicação
-│   │   ├── store/        # Estado global (Zustand)
-│   │   └── components/   # Componentes reutilizáveis
-│   ├── vite.config.ts    # Configuração do Vite + PWA
-│   └── Dockerfile
-└── docker-compose.yml    # Orquestração para desenvolvimento local
+├── backend/                     # API Flask
+│   ├── app.py                   # Rotas, banco (MySQL) e regras
+│   ├── ia_service.py            # IA: cadastro por texto/voz e resumo para a consulta
+│   ├── relatorio_pdf.py         # Relatório em PDF
+│   ├── schema.sql               # Esquema MySQL (referência; o app cria as tabelas)
+│   ├── scripts/migrar_postgres_para_mysql.py
+│   └── tests/                   # Testes (unitários, integração MySQL, IA, migração)
+├── frontend/                    # SPA React
+├── deploy/aws/                  # Infra da AWS (CloudFormation, compose de produção, guia)
+├── .github/workflows/           # Testes automáticos e deploy manual
+└── docker-compose.yml           # Desenvolvimento local (MySQL + backend + frontend)
 ```
 
-## Rodando localmente
+## Rodando localmente (Docker + MySQL)
 
-### Pré-requisitos
-- [Docker](https://www.docker.com/) e Docker Compose
-- Uma conta no [Supabase](https://supabase.com/) com um projeto criado
+Pré-requisito: [Docker](https://www.docker.com/) com Docker Compose.
 
-### Passo a passo
-
-**1. Clone o repositório**
 ```bash
-git clone https://github.com/lenasm0/Mediary.git
+git clone https://github.com/HelenaMieldazis/Mediary.git
+```
+```bash
 cd Mediary
 ```
-
-**2. Configure as variáveis de ambiente do backend**
-
-Crie `backend/.env`:
-```env
-DATABASE_URL=postgresql://postgres.XXXX:SENHA@aws-1-us-east-1.pooler.supabase.com:6543/postgres
-SECRET_KEY=uma-chave-secreta-aleatoria
-FRONTEND_URL=http://localhost:80
-```
-
-**3. Suba os containers**
 ```bash
-docker-compose up --build
+cp .env.example .env
 ```
+```bash
+cp backend/.env.example backend/.env
+```
+Edite os dois arquivos `.env` (senhas do MySQL local, `SECRET_KEY` e, se quiser a IA, `ANTHROPIC_API_KEY`).
+Eles estão no `.gitignore` e **nunca** vão para o Git.
+```bash
+docker compose up --build
+```
+- Frontend: http://localhost
+- Backend: http://localhost:5000/api/health
+- MySQL: `127.0.0.1:3306` (dados no volume `mediary-mysql-data`, que sobrevive a `docker compose down`)
 
-**4. Acesse**
-- Frontend: [http://localhost](http://localhost)
-- Backend (health check): [http://localhost:5000/api/health](http://localhost:5000/api/health)
+O backend cria as tabelas sozinho ao subir (`init_db`).
 
-## Deploy em produção (Railway)
+## Variáveis de ambiente
 
-O projeto é deployado como **dois serviços independentes** no Railway:
+**`.env` da raiz** (só o `docker-compose.yml` local): `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`.
 
-| Serviço | Root Directory | Variáveis necessárias |
-|---|---|---|
-| `backend` | `backend` | `DATABASE_URL`, `SECRET_KEY`, `FRONTEND_URL` |
-| `frontend` | `frontend` | `VITE_API_URL` |
+**Backend** (`backend/.env` local; em produção, Parameter Store `/mediary/prod/*`):
 
-> Veja o passo a passo completo em [`DEPLOY.md`](./DEPLOY.md)
+| Variável | Para quê |
+|---|---|
+| `DATABASE_URL` | `mysql://usuario[:senha]@host:3306/banco`. Senha com caracteres especiais: codifique na URL ou use `DATABASE_PASSWORD` |
+| `DATABASE_PASSWORD` | Senha do banco (opcional; tem prioridade sobre a da URL) |
+| `DATABASE_SSL_CA` | Certificado da CA para exigir TLS com o banco (opcional; usado no RDS) |
+| `SECRET_KEY` | Assinatura dos tokens JWT |
+| `FRONTEND_URL` | URL(s) do frontend permitidas no CORS, separadas por vírgula |
+| `AMBIENTE` | `producao` exige `SECRET_KEY` e tira `localhost` do CORS |
+| `ANTHROPIC_API_KEY` | Chave da API da Anthropic (sem ela, a IA fica oculta) |
+| `IA_MODELO_EXTRACAO`, `IA_MODELO_RESUMO` | Modelos da IA (padrões: `claude-haiku-5-5`, `claude-sonnet-5-5`) |
+| `IA_LIMITE_DIARIO_INTERPRETAR`, `IA_LIMITE_DIARIO_RESUMO` | Cota diária por usuário (padrões: 40 e 10) |
+
+**Frontend** (build): `VITE_API_URL`.
+
+## Testes
+
+Dentro de `backend/`:
+```bash
+pip install -r requirements-migracao.txt pypdf
+```
+Só os testes que não precisam de banco (lógica da IA, leitura da URL do banco):
+```bash
+python -m unittest discover -s tests -t . -v
+```
+Com um MySQL descartável no Docker (os testes **apagam** as tabelas desse banco, cujo nome precisa conter "teste"):
+```bash
+docker run -d --name mediary-mysql-teste -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=mediary_teste -p 127.0.0.1:3307:3306 mysql:8.4
+```
+```bash
+MEDIARY_TEST_DATABASE_URL="mysql://root:root@127.0.0.1:3307/mediary_teste" python -m unittest discover -s tests -t . -v
+```
+Isso cobre cadastro, login, CRUD de sintomas, calendário, PDF, isolamento entre usuários, consentimento e
+cota da IA (inclusive com requisições simultâneas). As rotas de IA são testadas contra um **servidor falso da
+API da Anthropic** (`tests/fake_anthropic.py`), sem gastar créditos. O teste da migração precisa também de
+`MEDIARY_TEST_PG_URL` e `MEDIARY_TEST_MIGRACAO_MYSQL_URL` (veja `tests/test_migracao.py`).
+O GitHub Actions (`.github/workflows/testes.yml`) roda tudo isso a cada pull request.
+
+Teste manual com a IA de verdade (gasta créditos): `python testar_ia.py`.
+
+## Migração dos dados do PostgreSQL (Supabase) para o MySQL
+
+`backend/scripts/migrar_postgres_para_mysql.py`, com os comandos `contar`, `exportar` e `importar`
+(este último com `--simular`). Ele nunca escreve no Postgres. Passo a passo em
+[`deploy/aws/README.md`](./deploy/aws/README.md#38-migrar-os-dados-do-supabase-controlado).
+
+## Deploy em produção (AWS)
+
+Backend em EC2 (Docker + Caddy com HTTPS) e MySQL no RDS, sem acesso público. Frontend na Vercel.
+Guia completo, custos e checklist: **[`deploy/aws/README.md`](./deploy/aws/README.md)**.
 
 ## Instalando como App (PWA)
 
