@@ -1,0 +1,53 @@
+# Produção na EC2: backend (gunicorn) atrás do Caddy, que obtém e renova sozinho o
+# certificado HTTPS (Let's Encrypt). O banco é o RDS (fora daqui).
+# Quem sobe isto é deploy/aws/servidor/atualizar.sh, que antes grava os segredos do
+# Parameter Store em /run/mediary/backend.env (memória, permissão 600).
+services:
+  backend:
+    build:
+      context: ../../backend
+      args:
+        BAIXAR_CA_RDS: "1"
+    container_name: mediary-backend
+    env_file:
+      - /run/mediary/backend.env
+    environment:
+      AMBIENTE: producao
+      DATABASE_SSL_CA: /app/certs/rds-global-bundle.pem
+      GUNICORN_WORKERS: "2"
+    # Sem "ports": só o Caddy, na rede interna, fala com o backend.
+    expose: ["5000"]
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:?}
+        awslogs-group: /mediary/prod
+        awslogs-stream: backend
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: mediary-caddy
+    depends_on: [backend]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?defina /mediary/prod/API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    mem_limit: 128m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:?}
+        awslogs-group: /mediary/prod
+        awslogs-stream: caddy
+
+volumes:
+  caddy-data:
+  caddy-config:

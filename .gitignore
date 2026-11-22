@@ -46,3 +46,11 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dumps/exports de banco (podem conter dados de saúde)
+dumps/
+backend/dumps/
+*.dump
+*.sql.gz
+*.csv.gz
+migracao_saida/

@@ -2,7 +2,11 @@ Flask==3.0.3
 Werkzeug==3.0.3
 flask-cors
 python-dotenv
-psycopg2-binary
+PyMySQL>=1.1.1
+# Necessário para a autenticação caching_sha2_password (padrão do MySQL 8) e TLS.
+cryptography
+# Base de fusos para zoneinfo (America/Sao_Paulo) mesmo em imagens "slim".
+tzdata
 gunicorn
 PyJWT
 reportlab

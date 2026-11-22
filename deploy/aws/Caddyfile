@@ -1,0 +1,16 @@
+# Proxy reverso com HTTPS automático (Let's Encrypt). HTTP vira HTTPS sozinho.
+# Sem diretiva "log": o Caddy não grava log de acesso (as URLs têm datas de sintomas).
+{
+	admin off
+}
+
+{$API_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	reverse_proxy backend:5000
+}

@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Mediary - backend Flask em EC2 (Docker + Caddy com HTTPS) e MySQL 8.4 no RDS sem
+  acesso publico. Segredos no SSM Parameter Store. Logs no CloudWatch com retencao curta.
+  NAO crie esta stack antes de ativar o orcamento (orcamento.yml) e os alertas de cobranca.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC padrao da regiao (Console > VPC > Your VPCs, a que tem "Default VPC = Yes").
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Pelo menos DUAS subnets da VPC em zonas de disponibilidade diferentes (o RDS exige).
+      A EC2 fica na primeira da lista.
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues: [t4g.micro, t4g.small, t3.micro, t3.small]
+    Description: t4g.* = ARM (Graviton), mais barato. Elegivel ao plano gratuito para contas novas.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t3.micro]
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 35
+    Description: >-
+      Dias de backup automatico do RDS. Contas no plano gratuito podem ser limitadas a 1;
+      no plano pago, recomenda-se 7.
+  RepoUrl:
+    Type: String
+    Default: https://github.com/HelenaMieldazis/Mediary.git
+  RepoBranch:
+    Type: String
+    Default: main
+  GitHubRepo:
+    Type: String
+    Default: HelenaMieldazis/Mediary
+    Description: Repositorio autorizado a fazer deploy pelo GitHub Actions (OIDC). Vazio = sem deploy pelo GitHub.
+  CriarProvedorOidcGitHub:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Use "false" se a conta ja tiver o provedor OIDC token.actions.githubusercontent.com.
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14]
+
+Conditions:
+  ComGitHub: !Not [!Equals [!Ref GitHubRepo, ""]]
+  CriarOidc: !And [!Condition ComGitHub, !Equals [!Ref CriarProvedorOidcGitHub, "true"]]
+  ArmInstance: !Or [!Equals [!Ref InstanceType, t4g.micro], !Equals [!Ref InstanceType, t4g.small]]
+
+Resources:
+  # ── Rede ───────────────────────────────────────────────────────────────────
+  SgBackend:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Mediary backend - so HTTP/HTTPS (sem SSH; acesso pelo Session Manager)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "ACME e redirecionamento"}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS"}
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0"}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0"}
+      Tags: [{Key: Name, Value: mediary-backend}]
+
+  SgBanco:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Mediary RDS - MySQL so a partir do backend
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SgBackend
+          Description: Somente a EC2 do backend
+      Tags: [{Key: Name, Value: mediary-banco}]
+
+  # ── Banco (RDS MySQL, sem acesso publico, criptografado, TLS obrigatorio) ──
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Mediary
+      SubnetIds: !Ref SubnetIds
+
+  DbParametros:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: mysql8.4
+      Description: Mediary - utf8mb4 e TLS obrigatorio
+      Parameters:
+        require_secure_transport: "1"
+        character_set_server: utf8mb4
+        collation_server: utf8mb4_unicode_ci
+
+  Banco:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: mediary-mysql
+      Engine: mysql
+      EngineVersion: "8.4"
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: "20"
+      MaxAllocatedStorage: 20
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBName: mediary
+      MasterUsername: mediary_admin
+      # Senha criada por voce antes no Parameter Store (SecureString); nunca no repositorio.
+      MasterUserPassword: "{{resolve:ssm-secure:/mediary/prod/db-senha-admin}}"
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      DBParameterGroupName: !Ref DbParametros
+      VPCSecurityGroups: [!Ref SgBanco]
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: true
+      CopyTagsToSnapshot: true
+      EnablePerformanceInsights: false
+      MonitoringInterval: 0
+      Tags: [{Key: Name, Value: mediary-mysql}]
+
+  # ── Logs ───────────────────────────────────────────────────────────────────
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /mediary/prod
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ── Permissoes da EC2 (le segredos /mediary/prod/*, escreve logs, Session Manager) ──
+  PapelBackend:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: mediary-backend
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParametersByPath, ssm:GetParameters, ssm:GetParameter]
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/mediary/prod*
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+                Resource: !Sub ${LogGroup.Arn}
+
+  PerfilBackend:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref PapelBackend]
+
+  # ── Servidor ───────────────────────────────────────────────────────────────
+  Servidor:
+    Type: AWS::EC2::Instance
+    DependsOn: Banco
+    Properties:
+      ImageId: !If
+        - ArmInstance
+        - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}"
+        - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref PerfilBackend
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroupIds: [!Ref SgBackend]
+      MetadataOptions:
+        HttpTokens: required          # IMDSv2
+        HttpPutResponseHopLimit: 1    # conteineres nao alcancam as credenciais da instancia
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 16, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+      Tags: [{Key: Name, Value: mediary-backend}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > /var/log/mediary-bootstrap.log 2>&1
+          dnf install -y docker git
+          systemctl enable --now docker
+          # Plugin docker compose (versao fixa).
+          ARQ=$(uname -m); [ "$ARQ" = "aarch64" ] || ARQ=x86_64
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+            "https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-$ARQ"
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          # 1 GB de swap: a t4g.micro tem 1 GB de RAM e o build do Python precisa de folga.
+          if [ ! -f /swapfile ]; then
+            dd if=/dev/zero of=/swapfile bs=1M count=1024 && chmod 600 /swapfile
+            mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+          git clone --branch ${RepoBranch} ${RepoUrl} /opt/mediary
+          echo "${RepoBranch}" > /etc/mediary-branch
+          # O primeiro deploy so funciona depois que os parametros /mediary/prod/* existirem.
+          /opt/mediary/deploy/aws/servidor/atualizar.sh ${RepoBranch} || \
+            echo "Primeiro deploy falhou (parametros ainda nao criados?). Rode atualizar.sh depois."
+
+  IpFixo:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Servidor
+      Tags: [{Key: Name, Value: mediary-backend}]
+
+  # ── Deploy pelo GitHub Actions (OIDC, sem chaves de acesso guardadas) ──────
+  ProvedorOidcGitHub:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CriarOidc
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  PapelDeployGitHub:
+    Type: AWS::IAM::Role
+    Condition: ComGitHub
+    Properties:
+      RoleName: mediary-deploy-github
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # So o ambiente "producao" do repositorio (configure aprovacao manual nele).
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:environment:producao
+      Policies:
+        - PolicyName: mediary-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Servidor}
+              - Effect: Allow
+                Action: [ssm:GetCommandInvocation, ssm:ListCommandInvocations]
+                Resource: "*"
+
+Outputs:
+  IpPublico:
+    Description: Aponte o DNS do dominio da API (registro A) para este IP.
+    Value: !Ref IpFixo
+  InstanceId:
+    Value: !Ref Servidor
+  EnderecoBanco:
+    Description: Use em /mediary/prod/DATABASE_URL (mysql://mediary_app@ENDERECO:3306/mediary)
+    Value: !GetAtt Banco.Endpoint.Address
+  PapelDeployGitHubArn:
+    Condition: ComGitHub
+    Description: Guarde como variavel AWS_DEPLOY_ROLE_ARN no ambiente "producao" do GitHub.
+    Value: !GetAtt PapelDeployGitHub.Arn
