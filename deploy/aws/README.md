@@ -87,7 +87,7 @@ tem menor latência e mantém os dados no Brasil.
 | Arquivo | Para quê |
 |---|---|
 | `orcamento.yml` | Orçamento mensal com alertas por e-mail (crie **primeiro**) |
-| `cloudformation.yml` | Security groups, RDS, EC2 com IP fixo, papel IAM mínimo, grupo de logs, papel de deploy do GitHub |
+| `cloudformation.yml` | Security groups, RDS, EC2 com IP fixo, papel IAM mínimo, grupo de logs, identidade do domínio no SES (e-mail), papel de deploy do GitHub |
 | `docker-compose.prod.yml` | Contêineres `web` (Caddy + frontend) e `backend` na EC2 |
 | `Dockerfile.web`, `Caddyfile` | Compila o frontend e configura HTTPS, `/api` e redirecionamento do `www` |
 | `servidor/atualizar.sh` | Na EC2: baixa o código, lê os segredos do Parameter Store, faz build e sobe |
@@ -294,7 +294,58 @@ GitHub > *Settings* > *Environments* > *New environment* `producao`:
 
 Para publicar: *Actions* > **Deploy AWS** > *Run workflow* > aprove.
 
-### 3.12 Desligar o que é antigo (só depois que a seção 4 passar inteira)
+### 3.12 E-mail do "Esqueci minha senha" (Amazon SES)
+O app envia o link de redefinição de senha pelo Amazon SES, a partir de `nao-responda@seudominio.com.br`.
+O link vale 30 minutos e só uma vez, e cada conta pode pedir no máximo 3 por hora. Custo: US$ 0,10 por mil e-mails.
+
+1. **Atualize a stack** (sem desligar o site; a EC2 não é recriada): baixe de novo o
+   `deploy/aws/cloudformation.yml` da `main` > **CloudFormation** > stack `mediary` > **Update** >
+   *Replace existing template* > *Upload a template file* > **Next**. Em **Dominio**, coloque só o
+   domínio (ex.: `mediarymedico.com.br`); mantenha os outros parâmetros como estão > **Next** > **Next** >
+   marque as caixas de IAM > **Submit**. Espere **UPDATE_COMPLETE** (2 a 5 minutos).
+2. Na aba **Outputs** aparecem `DkimRegistro1`, `DkimRegistro2` e `DkimRegistro3`, no formato
+   `abc123._domainkey.seudominio.com.br -> abc123.dkim.amazonses.com`.
+3. **Registro.br** > *Configurar zona DNS* > crie **3 entradas CNAME**, uma para cada output:
+   - **Nome:** só a parte antes do seu domínio (ex.: `abc123._domainkey`);
+   - **Dados:** o que vem depois da seta (ex.: `abc123.dkim.amazonses.com`).
+
+   Crie também uma entrada **TXT** com Nome `_dmarc` e Dados `v=DMARC1; p=none;`
+   (ajuda o e-mail a não cair no spam) > **Salvar alterações**.
+4. **Amazon SES** (região São Paulo) > *Identities* > `seudominio.com.br`: espere o status **Verified**
+   (normalmente menos de 1 hora; pode levar até 72 h).
+5. **Saia do modo sandbox.** Enquanto estiver no sandbox, o SES só entrega para endereços verificados.
+   *SES* > *Account dashboard* > **Request production access**:
+   - *Mail type*: **Transactional**; *Website URL*: `https://seudominio.com.br`;
+   - *Use case description* (pode colar):
+     > Mediary (https://seudominio.com.br) is a personal symptom diary web app. We only send
+     > transactional emails: password reset links requested by the users themselves on the
+     > "Forgot password" page. No marketing or bulk email. Expected volume: under 100 emails per
+     > month. Recipients are only registered users who requested the reset; addresses are never
+     > purchased or imported. Each account can request at most 3 emails per hour, and bounces and
+     > complaints are monitored in the SES console.
+
+   A resposta costuma vir em até 1 dia, por e-mail.
+6. **Para testar antes da aprovação:** *SES* > *Identities* > **Create identity** > *Email address* >
+   seu e-mail > clique no link de confirmação que chegar. Daí o SES já entrega para esse endereço.
+7. Publique o código novo (na sessão da EC2):
+   ```bash
+   sudo /opt/mediary/deploy/aws/servidor/atualizar.sh main
+   ```
+8. Teste: no site, **Esqueci minha senha** com o e-mail de uma conta > o e-mail chega (confira o spam) >
+   **Criar nova senha** > entre com a senha nova.
+
+Se o e-mail não chegar, veja o motivo (não aparece o endereço nem o link no log):
+```bash
+sudo docker logs mediary-backend --tail 50 2>&1 | grep -i "e-mail\|email"
+```
+| Mensagem | Causa |
+|---|---|
+| `MessageRejected` | Domínio ainda não verificado, ou sandbox e destinatário não verificado (passos 4 a 6). |
+| `AccessDeniedException` | A stack não foi atualizada com o `Dominio` (passo 1). |
+| `NoCredentialsError` | A stack não foi atualizada (o servidor precisa do novo limite de metadados, passo 1). |
+| `EMAIL_REMETENTE não configurado` | Rode o `atualizar.sh` de novo (passo 7). |
+
+### 3.13 Desligar o que é antigo (só depois que a seção 4 passar inteira)
 1. Anthropic: revogue a chave **antiga** (*API keys* > *Delete*).
 2. Vercel: *Settings* > *General* > **Pause/Delete project** (e remova o domínio de lá, se estava ligado).
 3. Render: serviço do backend > *Settings* > **Suspend Web Service** (reversível).
@@ -309,6 +360,7 @@ Para publicar: *Actions* > **Deploy AWS** > *Run workflow* > aprove.
 - [ ] `https://seudominio.com.br/api/health` → `{"status":"ok"}`
 - [ ] Login de um usuário **migrado** (senha antiga) mostra os sintomas antigos; `contar` bate com o Supabase
 - [ ] Cadastro de usuário novo
+- [ ] **Esqueci minha senha**: o e-mail chega, o link cria a senha nova, o login funciona e o mesmo link não serve de novo
 - [ ] Registrar, editar (a hora na edição é a registrada) e excluir um sintoma; o calendário marca o dia
 - [ ] Relatório em PDF (sem IA) com acentos corretos
 - [ ] IA: o botão do assistente aparece; o consentimento aparece no primeiro uso

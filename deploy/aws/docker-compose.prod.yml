@@ -16,6 +16,10 @@ services:
       AMBIENTE: producao
       DATABASE_SSL_CA: /app/certs/rds-global-bundle.pem
       FRONTEND_URL: https://${DOMINIO:?},https://www.${DOMINIO:?}
+      # Recuperação de senha: link do e-mail e remetente (Amazon SES, pelo papel da instância).
+      APP_URL: https://${DOMINIO:?}
+      EMAIL_REMETENTE: Mediary <nao-responda@${DOMINIO:?}>
+      AWS_REGION: ${AWS_REGION:?}
       GUNICORN_WORKERS: "2"
     expose: ["5000"]
     restart: unless-stopped
