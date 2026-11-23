@@ -202,17 +202,21 @@ Depois de uma falha, **delete a stack** (`ROLLBACK_COMPLETE`) antes de tentar de
 4. Se já existirem registros A ou CNAME antigos para o raiz ou para `www` (ex.: apontando para a Vercel),
    **apague-os**. Não mexa em registros MX/TXT de e-mail.
 5. **Salvar alterações**.
-6. No CloudShell, confira (deve mostrar o `IpPublico`; pode levar de minutos a algumas horas):
+6. No CloudShell (que não tem `dig` nem `nslookup`), confira. Deve mostrar o `IpPublico`;
+   pode levar de minutos a algumas horas:
    ```bash
-   dig +short seudominio.com.br
+   python3 -c "import socket; print(socket.gethostbyname('seudominio.com.br'))"
    ```
    ```bash
-   dig +short www.seudominio.com.br
+   python3 -c "import socket; print(socket.gethostbyname('www.seudominio.com.br'))"
    ```
 
 ### 3.9 Primeiro deploy
-1. **EC2** > *Instances* > `mediary-backend` > **Connect** > **Session Manager** > **Connect**.
-   Se o botão estiver cinza, espere 5 minutos (o agente está registrando).
+Atenção: os comandos desta seção rodam **dentro do servidor (EC2)**, não no CloudShell. O CloudShell
+(prompt `~ $`) é uma máquina separada e não tem a pasta `/opt/mediary`.
+1. **EC2** > *Instances* > `mediary-backend` > **Connect** > aba **Session Manager** > **Connect**.
+   Abre uma nova aba com o prompt `sh-5.2$`. Se o botão estiver cinza, espere 5 minutos (o agente está registrando).
+   Para conferir onde você está: `hostname` no servidor mostra algo como `ip-172-31-...`.
 2. Confira a instalação inicial (deve terminar com `Primeiro deploy falhou...`, o que é **esperado**):
    ```bash
    sudo tail -3 /var/log/mediary-bootstrap.log
