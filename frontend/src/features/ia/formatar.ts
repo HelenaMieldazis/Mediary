@@ -53,3 +53,11 @@ export function dataHoraBr(valor: string | null | undefined): string {
   const [d, h] = valor.split(" ");
   return `${dataBr(d)}${h ? ` às ${h.slice(0, 5)}` : ""}`;
 }
+
+/** "Oi, Helena! Como você está se sentindo?" (só o primeiro nome; sem nome, "Oi!").
+ *  A saudação só existe na tela: o nome nunca vai para a IA. */
+export function saudacaoIA(nomeCompleto?: string | null): string {
+  const primeiro = (nomeCompleto || "").trim().split(/\s+/)[0] || "";
+  const nome = primeiro ? primeiro.charAt(0).toLocaleUpperCase("pt-BR") + primeiro.slice(1) : "";
+  return nome ? `Oi, ${nome}! Como você está se sentindo?` : "Oi! Como você está se sentindo?";
+}

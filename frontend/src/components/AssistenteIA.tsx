@@ -4,9 +4,10 @@ import { toast } from "react-toastify";
 import { iaService } from "../api/ia";
 import { getErrorMessage } from "../api/axios";
 import { useSintomasStore } from "../store/useSintomasStore";
+import { useAuthStore } from "../store/useAuthStore";
 import { useReconhecimentoVoz } from "../hooks/useReconhecimentoVoz";
 import { ConsentimentoIA } from "./ConsentimentoIA";
-import { dataHoraBr, ROTULO_TIPO } from "../features/ia/formatar";
+import { dataHoraBr, ROTULO_TIPO, saudacaoIA } from "../features/ia/formatar";
 import type { RascunhoIA, SintomaProntoIA, TurnoConversa } from "../types/ia";
 
 interface Props {
@@ -16,8 +17,8 @@ interface Props {
 
 type Fase = "carregando" | "consentimento" | "conversa";
 
-const BOAS_VINDAS =
-  "Oi! Me conte o que você sentiu, por texto ou por voz. Por exemplo: \"ontem à noite tive dor de cabeça por umas duas horas\".";
+const DICA_INICIAL =
+  "Pode me contar por texto ou pelo microfone. Por exemplo: \"ontem à noite tive dor de cabeça por umas duas horas\".";
 
 /** Cada abertura monta uma sessão nova: a conversa nunca sobra de uma abertura para outra. */
 export const AssistenteIA: React.FC<Props> = ({ isOpen, onClose }) =>
@@ -25,6 +26,7 @@ export const AssistenteIA: React.FC<Props> = ({ isOpen, onClose }) =>
 
 const SessaoAssistente: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { adicionarSintoma, fetchCalendarioInfo } = useSintomasStore();
+  const nomeUsuario = useAuthStore((state) => state.user?.nome);
 
   const [fase, setFase] = useState<Fase>("carregando");
   const [turnos, setTurnos] = useState<TurnoConversa[]>([]);
@@ -146,7 +148,7 @@ const SessaoAssistente: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   return (
     <div className='fixed inset-0 z-50 flex items-end justify-center bg-black/50 animate-fade-in'>
       <div className='absolute inset-0' onClick={fechar} />
-      <div className='relative w-full max-w-md bg-white rounded-t-[32px] shadow-2xl flex flex-col max-h-[92vh] h-[85vh] animate-slide-up'>
+      <div className='relative w-full max-w-md bg-white rounded-t-[32px] shadow-2xl flex flex-col max-h-[92dvh] h-[85dvh] pb-[env(safe-area-inset-bottom)] animate-slide-up'>
         {/* Cabeçalho */}
         <div className='flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100'>
           <div className='flex items-center gap-2 text-brand-navy font-black'>
@@ -180,7 +182,8 @@ const SessaoAssistente: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 </div>
               )}
 
-              <Balao papel='assistente' texto={BOAS_VINDAS} />
+              <Balao papel='assistente' texto={saudacaoIA(nomeUsuario)} />
+              <Balao papel='assistente' texto={DICA_INICIAL} suave />
               {turnos.map((t, i) => (
                 <Balao key={i} papel={t.papel} texto={t.texto} />
               ))}
@@ -267,7 +270,7 @@ const SessaoAssistente: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   }}
                   maxLength={600}
                   rows={1}
-                  placeholder={voz.ouvindo ? "Ouvindo..." : "Escreva aqui o que sentiu"}
+                  placeholder={voz.ouvindo ? "Ouvindo..." : "O que você sentiu?"}
                   disabled={enviando || voz.ouvindo}
                   className='flex-1 resize-none rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-brand-navy font-medium focus:outline-none focus:border-brand-blue max-h-32'
                 />
