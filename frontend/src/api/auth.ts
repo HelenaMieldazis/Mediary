@@ -28,6 +28,19 @@ export const authService = {
     const response = await api.put('/api/usuario/senha', { senha_atual, senha_nova });
     return response.data;
   },
+  /** Foto de perfil: baixa como Blob (a rota exige o token, por isso não dá para usar <img src> direto). */
+  baixarFoto: async (): Promise<Blob> => {
+    const response = await api.get('/api/usuario/foto', { responseType: 'blob' });
+    return response.data as Blob;
+  },
+  enviarFoto: async (foto: Blob): Promise<void> => {
+    const dados = new FormData();
+    dados.append('foto', foto, 'foto.jpg');
+    await api.put('/api/usuario/foto', dados, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+  removerFoto: async (): Promise<void> => {
+    await api.delete('/api/usuario/foto');
+  },
   /** Pede o e-mail com o link de redefinição. A resposta é a mesma exista ou não a conta. */
   esqueciSenha: async (email: string): Promise<{ message: string }> => {
     const response = await api.post('/api/senha/esqueci', { email });

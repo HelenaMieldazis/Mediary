@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'bg-medical-1.png', 'bg-medical-2.png'],
+      includeAssets: ['favicon.svg', 'favicon-32.png', 'apple-touch-icon.png', 'bg-medical-1.png', 'bg-medical-2.png'],
       manifest: {
         name: 'Mediary - Diário de Sintomas',
         short_name: 'Mediary',

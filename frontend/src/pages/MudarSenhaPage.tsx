@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Avatar } from "../components/Avatar";
 import { useNavigate } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import { Input } from "../components/Input";
@@ -66,12 +67,7 @@ export const MudarSenhaPage = () => {
       </div>
       <div className='px-6 -mt-16 flex flex-col items-center mb-8'>
         <div className='w-32 h-32 bg-white rounded-full p-1 shadow-lg mb-4'>
-          <div className='w-full h-full bg-brand-teal rounded-full overflow-hidden flex items-center justify-center'>
-            {/* Foto Mockada - Pode ser substituída por uma tag img no futuro */}
-            <span className='text-white text-4xl font-black'>
-              {user?.nome?.charAt(0).toUpperCase() || "U"}
-            </span>
-          </div>
+          <Avatar />
         </div>
         <h2 className='text-2xl font-black text-brand-navy'>
           {user?.nome || "Usuário"}

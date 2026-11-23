@@ -12,6 +12,7 @@ import { iaService } from "../api/ia";
 export const CalendarioPage = () => {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
+  const fotoUrl = useAuthStore((state) => state.fotoUrl);
   const { setSelectedDate } = useSintomasStore();
 
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -75,9 +76,16 @@ export const CalendarioPage = () => {
             )}
             <button
               onClick={() => navigate("/configuracoes")}
-              className='w-11 h-11 bg-brand-navy rounded-2xl flex items-center justify-center text-brand-blue active:scale-90 transition-all shadow-xl border-2 border-brand-blue-dark/30'
+              aria-label='Configurações e perfil'
+              className={`w-11 h-11 bg-brand-navy flex items-center justify-center text-brand-blue active:scale-90 transition-all shadow-xl overflow-hidden ${
+                fotoUrl ? "rounded-full border-2 border-white/80 p-0" : "rounded-2xl border-2 border-brand-blue-dark/30"
+              }`}
             >
-              <User size={22} strokeWidth={2.5} />
+              {fotoUrl ? (
+                <img src={fotoUrl} alt='' className='w-full h-full object-cover' draggable={false} />
+              ) : (
+                <User size={22} strokeWidth={2.5} />
+              )}
             </button>
           </div>
         </div>
