@@ -10,6 +10,10 @@ import {
   requisitosFaltando,
 } from "../components/PasswordRequirements";
 import { authService } from "../api/auth";
+import { AuthLayout } from "../components/AuthLayout";
+import {
+  authBotao, authCabecalhoTexto, authEspacoCampos, authRodape, authTitulo,
+} from "../features/auth/estilosAuth";
 import { getErrorMessage } from "../api/axios";
 
 /** Lê o token do link do e-mail (sem efeitos colaterais: o React pode chamar duas vezes). */
@@ -58,16 +62,13 @@ export const RedefinirSenhaPage = () => {
   };
 
   return (
-    <div className='flex flex-col h-full min-h-screen bg-brand-blue overflow-hidden'>
-      <div className='flex-[0.3] flex flex-col justify-center items-center py-4 px-6'>
-        <div className='bg-brand-navy p-5 rounded-3xl shadow-2xl transform rotate-[-5deg] flex items-center justify-center border-4 border-white/10 scale-90'>
-          <KeyRound size={60} className='text-brand-blue' strokeWidth={1.5} />
-        </div>
-      </div>
-
-      <div className='flex-[0.7] bg-gray-50 rounded-t-[40px] shadow-2xl px-8 pt-12 pb-6 flex flex-col animate-slide-up relative z-20'>
-        <div className='text-center mb-8'>
-          <h1 className='text-2xl font-black text-brand-navy tracking-widest uppercase leading-tight'>
+    <AuthLayout
+      rotacao='-rotate-6'
+      icone={<KeyRound className='size-[clamp(2.5rem,8dvh,3.75rem)] text-brand-blue' strokeWidth={1.5} />}
+    >
+      <div className='flex-1 flex flex-col justify-center'>
+        <div className={authCabecalhoTexto}>
+          <h1 className={authTitulo}>
             Nova
             <br />
             Senha
@@ -75,8 +76,8 @@ export const RedefinirSenhaPage = () => {
         </div>
 
         {!token ? (
-          <div className='flex-1 flex flex-col items-center text-center'>
-            <p className='text-gray-500 mb-8 px-4'>
+          <div className='flex flex-col items-center text-center'>
+            <p className='text-gray-500 mb-8 px-2'>
               Este link está incompleto. Abra de novo o link do e-mail ou peça um novo.
             </p>
             <Button onClick={() => navigate("/esqueci-senha")} className='text-white! max-w-[260px]'>
@@ -84,7 +85,7 @@ export const RedefinirSenhaPage = () => {
             </Button>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className='w-full space-y-4 max-w-sm mx-auto flex-1 flex flex-col'>
+          <form onSubmit={handleSubmit} className={`w-full ${authEspacoCampos}`}>
             <Input
               label='Nova Senha'
               type='password'
@@ -105,24 +106,24 @@ export const RedefinirSenhaPage = () => {
             {confirmarSenha && confirmarSenha !== novaSenha && (
               <p className='text-xs text-brand-danger font-bold ml-1'>As senhas não coincidem</p>
             )}
-            <div className='pt-4'>
-              <Button type='submit' isLoading={loading} className='text-white! w-full'>
+            <div className='pt-[clamp(0.25rem,1.5dvh,1rem)]'>
+              <Button type='submit' isLoading={loading} className={`${authBotao} w-full`}>
                 SALVAR NOVA SENHA
               </Button>
             </div>
           </form>
         )}
-
-        <div className='mt-auto pt-6 text-center'>
-          <button
-            type='button'
-            onClick={() => navigate("/login")}
-            className='text-brand-navy text-[15px] font-bold opacity-60 hover:opacity-100 transition-opacity'
-          >
-            Voltar ao login
-          </button>
-        </div>
       </div>
-    </div>
+
+      <div className={authRodape}>
+        <button
+          type='button'
+          onClick={() => navigate("/login")}
+          className='text-brand-navy text-[15px] font-bold opacity-60 hover:opacity-100 transition-opacity'
+        >
+          Voltar ao login
+        </button>
+      </div>
+    </AuthLayout>
   );
 };

@@ -7,7 +7,12 @@ import { toast } from "react-toastify";
 import { loginSchema } from "../features/auth/authSchema";
 import { getErrorMessage } from "../api/axios";
 import { ZodError } from "zod";
-import { Calendar, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { AuthLayout } from "../components/AuthLayout";
+import { LogoMediary } from "../components/LogoMediary";
+import {
+  authBotao, authCabecalhoTexto, authCampo, authEspacoCampos, authRodape, authTitulo,
+} from "../features/auth/estilosAuth";
 
 export const LoginPage = () => {
   const navigate = useNavigate();
@@ -38,48 +43,25 @@ export const LoginPage = () => {
   };
 
   return (
-    <div className='flex flex-col h-full min-h-screen bg-brand-blue overflow-hidden'>
-      {/* Cabeçalho com Ícone */}
-      <div className='flex-[0.3] flex flex-col justify-center items-center py-4 px-6 relative'>
-        {/* Placeholder para o fundo decorado */}
-        <div className='absolute inset-0 opacity-10 flex flex-wrap gap-4 p-4 overflow-hidden pointer-events-none'></div>
-
-        <div className='relative z-10 flex flex-col items-center'>
-          <div className='bg-brand-navy p-5 rounded-3xl shadow-2xl transform -rotate-2 flex items-center justify-center border-4 border-white/10 scale-90'>
-            <div className='relative'>
-              <Calendar
-                size={70}
-                className='text-brand-blue'
-                strokeWidth={1.5}
-              />
-              <div className='absolute top-1/2 left-1/2 transform -translate-x-1/2 translate-y-[-10%] flex items-center justify-center'>
-                <div className='w-7 h-7 flex items-center justify-center'>
-                  <div className='absolute w-full h-1.5 bg-brand-navy rounded-full'></div>
-                  <div className='absolute h-full w-1.5 bg-brand-navy rounded-full'></div>
-                </div>
-              </div>
-            </div>
-          </div>
+    <AuthLayout icone={<LogoMediary className='size-[clamp(2.75rem,9dvh,4.5rem)] text-brand-blue' />}>
+      {/* Em telas altas, título e formulário ficam centralizados no cartão. */}
+      <div className='flex-1 flex flex-col justify-center'>
+        <div className={authCabecalhoTexto}>
+          <h1 className={authTitulo}>Login</h1>
         </div>
-      </div>
 
-      {/* Contêiner do Formulário */}
-      <div className='flex-[0.7] bg-gray-50 rounded-t-[40px] shadow-2xl px-8 pt-12 pb-6 flex flex-col items-center animate-slide-up relative z-20'>
-        <h1 className='text-3xl font-black text-brand-navy mb-8 tracking-[0.2em] uppercase'>
-          Login
-        </h1>
-
-        <form onSubmit={handleLogin} className='w-full space-y-6 max-w-sm'>
+        <form onSubmit={handleLogin} className={`w-full ${authEspacoCampos}`}>
           <div className='relative group shadow-sm'>
             <div className='absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-brand-blue transition-colors'>
               <Mail size={20} />
             </div>
             <Input
               type='email'
+              autoComplete='email'
               placeholder='E-mail'
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className='pl-12 bg-white! shadow-lg! border-none py-4 text-base'
+              className={authCampo}
             />
           </div>
 
@@ -89,14 +71,16 @@ export const LoginPage = () => {
             </div>
             <Input
               type={showPassword ? "text" : "password"}
+              autoComplete='current-password'
               placeholder='Senha'
               value={senha}
               onChange={(e) => setSenha(e.target.value)}
-              className='pl-12 pr-12 bg-white! shadow-lg! border-none py-4 text-base'
+              className={`${authCampo} pr-12`}
             />
             <button
               type='button'
               onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? "Esconder senha" : "Mostrar senha"}
               className='absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-brand-navy transition-colors'
             >
               {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
@@ -113,30 +97,26 @@ export const LoginPage = () => {
             </button>
           </div>
 
-          <div className='pt-4 pb-2'>
-            <Button
-              type='submit'
-              isLoading={loading}
-              className='text-white! py-5 shadow-[0_8px_0_0_var(--color-brand-blue-dark)] active:translate-y-[8px] active:shadow-none transition-all'
-            >
+          <div className='pt-[clamp(0.25rem,1.5dvh,1rem)]'>
+            <Button type='submit' isLoading={loading} className={authBotao}>
               ENTRAR
             </Button>
           </div>
         </form>
-
-        <div className='mt-auto pt-6 text-center'>
-          <p className='text-brand-navy text-[15px] font-medium opacity-80'>
-            Ainda não tem uma conta?{" "}
-            <button
-              type='button'
-              onClick={() => navigate("/cadastro")}
-              className='text-brand-blue font-black hover:underline underline-offset-4'
-            >
-              Cadastre-se
-            </button>
-          </p>
-        </div>
       </div>
-    </div>
+
+      <div className={authRodape}>
+        <p className='text-brand-navy text-[15px] font-medium opacity-80'>
+          Ainda não tem uma conta?{" "}
+          <button
+            type='button'
+            onClick={() => navigate("/cadastro")}
+            className='text-brand-blue font-black hover:underline underline-offset-4'
+          >
+            Cadastre-se
+          </button>
+        </p>
+      </div>
+    </AuthLayout>
   );
 };
