@@ -5,6 +5,7 @@ import { useAuthStore } from "../store/useAuthStore";
 // Pags a serem criadas
 import { LoginPage } from "../pages/LoginPage";
 import { EsqueciSenhaPage } from "../pages/EsqueciSenhaPage";
+import { RedefinirSenhaPage } from "../pages/RedefinirSenhaPage";
 import { CadastroPage } from "../pages/CadastroPage";
 import { CalendarioPage } from "../pages/CalendarioPage";
 import { ConfiguracoesPage } from "../pages/ConfiguracoesPage";
@@ -26,6 +27,7 @@ export const AppRouter = () => {
         <Route path='/login' element={<LoginPage />} />
         <Route path='/cadastro' element={<CadastroPage />} />
         <Route path='/esqueci-senha' element={<EsqueciSenhaPage />} />
+        <Route path='/redefinir-senha' element={<RedefinirSenhaPage />} />
 
         {/* Rotas Privadas */}
         <Route

@@ -27,5 +27,15 @@ export const authService = {
   updateSenha: async (senha_atual: string, senha_nova: string) => {
     const response = await api.put('/api/usuario/senha', { senha_atual, senha_nova });
     return response.data;
+  },
+  /** Pede o e-mail com o link de redefinição. A resposta é a mesma exista ou não a conta. */
+  esqueciSenha: async (email: string): Promise<{ message: string }> => {
+    const response = await api.post('/api/senha/esqueci', { email });
+    return response.data;
+  },
+  /** Cria a nova senha usando o token do link recebido por e-mail. */
+  redefinirSenha: async (token: string, senha_nova: string): Promise<{ message: string }> => {
+    const response = await api.post('/api/senha/redefinir', { token, senha_nova });
+    return response.data;
   }
 };

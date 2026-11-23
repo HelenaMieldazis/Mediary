@@ -4,6 +4,8 @@ import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { toast } from "react-toastify";
 import { ChevronLeft, Mail, KeyRound } from "lucide-react";
+import { authService } from "../api/auth";
+import { getErrorMessage } from "../api/axios";
 
 export const EsqueciSenhaPage = () => {
   const navigate = useNavigate();
@@ -11,21 +13,22 @@ export const EsqueciSenhaPage = () => {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) {
+    if (!email.trim()) {
       toast.error("Por favor, informe seu e-mail.");
       return;
     }
 
     setLoading(true);
-
-    // Simular envio de e-mail
-    setTimeout(() => {
+    try {
+      await authService.esqueciSenha(email.trim());
       setSent(true);
-      toast.success("E-mail de recuperação enviado!");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Não foi possível enviar agora. Tente novamente."));
+    } finally {
       setLoading(false);
-    }, 1500);
+    }
   };
 
   return (
@@ -95,11 +98,12 @@ export const EsqueciSenhaPage = () => {
               <Mail size={40} />
             </div>
             <h2 className='text-2xl font-black text-brand-navy mb-4'>
-              E-mail Enviado!
+              Confira seu e-mail
             </h2>
             <p className='text-gray-500 mb-10 px-6'>
-              Verifique sua caixa de entrada e siga as instruções para redefinir
-              sua senha.
+              Se houver uma conta com <b>{email.trim()}</b>, enviamos um link para
+              criar uma nova senha. Ele vale por 30 minutos. Não chegou? Veja a
+              pasta de spam ou tente de novo daqui a alguns minutos.
             </p>
             <Button
               onClick={() => navigate("/login")}
