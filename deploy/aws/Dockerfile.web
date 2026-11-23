@@ -1,0 +1,17 @@
+# Imagem "web" de produção: compila o frontend (React/Vite) e o serve pelo Caddy,
+# que também faz o HTTPS automático e encaminha /api/* para o backend.
+# Contexto de build: a raiz do repositório.
+
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm install --legacy-peer-deps --no-audit --no-fund
+COPY frontend/ ./
+# Vazio de propósito: o frontend chama /api no mesmo endereço do site.
+ENV VITE_API_URL=""
+# Limite de memória para caber na t4g.micro (1 GB de RAM + swap).
+RUN NODE_OPTIONS=--max-old-space-size=700 npm run build
+
+FROM caddy:2.10.2-alpine
+COPY --from=build /app/dist /srv
+COPY deploy/aws/Caddyfile /etc/caddy/Caddyfile

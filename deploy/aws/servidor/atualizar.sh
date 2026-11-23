@@ -47,20 +47,22 @@ for p in sorted(params, key=lambda p: p["Name"]):
     print(f"{nome}='{valor}'")
 PY
 mv "$ENV_DIR/backend.env.novo" "$ENV_DIR/backend.env"
-for obrigatoria in DATABASE_URL DATABASE_PASSWORD SECRET_KEY FRONTEND_URL API_DOMAIN; do
+for obrigatoria in DATABASE_URL DATABASE_PASSWORD SECRET_KEY DOMINIO; do
   grep -q "^$obrigatoria=" "$ENV_DIR/backend.env" || { echo "Falta $PREFIXO$obrigatoria"; exit 1; }
 done
-export API_DOMAIN=$(sed -n "s/^API_DOMAIN='\(.*\)'$/\1/p" "$ENV_DIR/backend.env")
+export DOMINIO=$(sed -n "s/^DOMINIO='\(.*\)'$/\1/p" "$ENV_DIR/backend.env")
 
 echo "==> Build e subida dos contêineres"
 cd "$DIR/deploy/aws"
+# O contêiner "caddy" das versões antigas foi substituído pelo "web".
+docker rm -f mediary-caddy >/dev/null 2>&1 || true
 docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 docker image prune -f >/dev/null
 
 echo "==> Verificando /api/health"
 for i in $(seq 1 30); do
   if docker exec mediary-backend python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:5000/api/health',timeout=3)" 2>/dev/null; then
-    echo "OK: backend respondendo (HTTPS em https://$API_DOMAIN/api/health)"
+    echo "OK: backend respondendo. Site: https://$DOMINIO  API: https://$DOMINIO/api/health"
     exit 0
   fi
   sleep 2
