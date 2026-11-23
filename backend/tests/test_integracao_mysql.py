@@ -68,7 +68,7 @@ class IntegracaoMySQL(unittest.TestCase):
         ia_service._resetar_cliente()
         conn = mediary.get_db()
         with conn.cursor() as cur:
-            for t in ("RedefinicaoSenha", "IaUso", "Sintomas", "Usuarios"):
+            for t in ("FotoPerfil", "RedefinicaoSenha", "IaUso", "Sintomas", "Usuarios"):
                 cur.execute(f"DROP TABLE IF EXISTS `{t}`")
         conn.commit()
         conn.close()
@@ -114,7 +114,7 @@ class IntegracaoMySQL(unittest.TestCase):
     def test_00_esquema_utf8mb4_e_coluna_da_ia(self):
         linhas = self._sql("""SELECT TABLE_NAME, TABLE_COLLATION, ENGINE FROM information_schema.TABLES
                               WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME""")
-        self.assertEqual({l[0] for l in linhas}, {"IaUso", "RedefinicaoSenha", "Sintomas", "Usuarios"})
+        self.assertEqual({l[0] for l in linhas}, {"FotoPerfil", "IaUso", "RedefinicaoSenha", "Sintomas", "Usuarios"})
         for _, coll, engine in linhas:
             self.assertEqual((coll, engine), ("utf8mb4_unicode_ci", "InnoDB"))
         # ADD COLUMN idempotente: remove a coluna e o init_db a recria.
@@ -485,6 +485,76 @@ class IntegracaoMySQL(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertNotIn("marina.falha", "\n".join(logs.output))
         self.assertNotIn("token=", "\n".join(logs.output))
+
+    # ── foto de perfil ──
+    def _imagem(self, formato="JPEG", tamanho=(800, 600), modo="RGB", gps=False):
+        from PIL import Image
+        cor = {"RGBA": (200, 30, 30, 128), "L": 128}.get(modo, (200, 30, 30))
+        img = Image.new(modo, tamanho, cor)
+        buf = io.BytesIO()
+        if gps:
+            exif = Image.Exif()
+            exif[0x010F] = "CameraFalsa"          # Make
+            exif[0x8825] = {2: (23.0, 33.0, 0.0)}  # GPSInfo: latitude
+            img.save(buf, format=formato, exif=exif)
+        else:
+            img.save(buf, format=formato)
+        return buf.getvalue()
+
+    def test_foto_de_perfil(self):
+        from PIL import Image
+        ha, _ = self._novo_usuario("Olga Foto", "olga.foto@exemplo.com")
+        hb, _ = self._novo_usuario("Paulo", "paulo.foto@exemplo.com")
+        self.assertFalse(self.client.get("/api/me", headers=ha).get_json()["tem_foto"])
+        self.assertEqual(self.client.get("/api/usuario/foto", headers=ha).status_code, 404)
+
+        original = self._imagem(gps=True)
+        self.assertIn(b"CameraFalsa", original)
+        r = self.client.put("/api/usuario/foto", headers=ha, content_type="multipart/form-data",
+                            data={"foto": (io.BytesIO(original), "foto.jpg")})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertTrue(self.client.get("/api/me", headers=ha).get_json()["tem_foto"])
+
+        r = self.client.get("/api/usuario/foto", headers=ha)
+        self.assertEqual((r.status_code, r.mimetype), (200, "image/jpeg"))
+        self.assertIn("no-store", r.headers["Cache-Control"])
+        salva = Image.open(io.BytesIO(r.data))
+        self.assertEqual((salva.format, salva.size), ("JPEG", (256, 256)))
+        self.assertNotIn(b"CameraFalsa", r.data)       # metadados (EXIF/GPS) apagados
+        self.assertEqual(len(salva.getexif()), 0)
+
+        # Cada um só vê a própria foto.
+        self.assertEqual(self.client.get("/api/usuario/foto", headers=hb).status_code, 404)
+        self.assertEqual(self.client.get("/api/usuario/foto").status_code, 401)
+
+        # PNG com transparência também serve (vira JPEG com fundo branco); trocar a foto substitui.
+        r = self.client.put("/api/usuario/foto", headers=ha, content_type="multipart/form-data",
+                            data={"foto": (io.BytesIO(self._imagem("PNG", (300, 900), "RGBA")), "f.png")})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._sql("SELECT COUNT(*) FROM FotoPerfil WHERE usuario_id = "
+                                   "(SELECT id FROM Usuarios WHERE email='olga.foto@exemplo.com')")[0][0], 1)
+
+        # Arquivos inválidos.
+        for nome, dados in (("texto.jpg", b"isto nao e imagem"), ("vazio.jpg", b""),
+                            ("animacao.gif", self._imagem("GIF", (50, 50)))):
+            r = self.client.put("/api/usuario/foto", headers=ha, content_type="multipart/form-data",
+                                data={"foto": (io.BytesIO(dados), nome)})
+            self.assertEqual(r.status_code, 400, nome)
+        # Imagem gigante (bomba de descompressão) é recusada sem travar.
+        bomba = self._imagem("PNG", (9000, 9000), "L")
+        r = self.client.put("/api/usuario/foto", headers=ha, content_type="multipart/form-data",
+                            data={"foto": (io.BytesIO(bomba), "bomba.png")})
+        self.assertEqual(r.status_code, 400)
+        # Corpo acima de 8 MB.
+        r = self.client.put("/api/usuario/foto", headers=ha, content_type="multipart/form-data",
+                            data={"foto": (io.BytesIO(b"0" * (9 * 1024 * 1024)), "grande.jpg")})
+        self.assertEqual(r.status_code, 413)
+        self.assertIn("8 MB", r.get_json()["error"])
+
+        # Remover.
+        self.assertEqual(self.client.delete("/api/usuario/foto", headers=ha).status_code, 200)
+        self.assertFalse(self.client.get("/api/me", headers=ha).get_json()["tem_foto"])
+        self.assertEqual(self.client.get("/api/usuario/foto", headers=ha).status_code, 404)
 
     def test_ia_desligada_sem_chave(self):
         h, _ = self._novo_usuario("Júlia", "julia.semchave@exemplo.com")

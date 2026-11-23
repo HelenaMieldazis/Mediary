@@ -10,6 +10,8 @@ tzdata
 gunicorn
 PyJWT
 reportlab
+# Foto de perfil: validar, recortar e regravar a imagem (já vem com o reportlab).
+Pillow
 anthropic>=2.9.0
 # Envio de e-mail pelo Amazon SES (recuperação de senha).
 boto3

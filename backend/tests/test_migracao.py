@@ -62,7 +62,7 @@ class Migracao(unittest.TestCase):
         self.app = app
         conn = app.get_db()
         with conn.cursor() as c:
-            for t in ("RedefinicaoSenha", "IaUso", "Sintomas", "Usuarios"):
+            for t in ("FotoPerfil", "RedefinicaoSenha", "IaUso", "Sintomas", "Usuarios"):
                 c.execute(f"DROP TABLE IF EXISTS `{t}`")
         conn.commit()
         conn.close()

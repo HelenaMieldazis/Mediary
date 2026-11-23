@@ -4,7 +4,10 @@ import time
 import hashlib
 import secrets
 import threading
+import warnings
+from io import BytesIO
 import jwt
+from PIL import Image, ImageOps, UnidentifiedImageError
 import logging
 import pymysql
 from pymysql.cursors import DictCursor
@@ -68,6 +71,8 @@ class _JSONProvider(DefaultJSONProvider):
 app = Flask(__name__)
 app.json = _JSONProvider(app)
 app.config["SECRET_KEY"] = SECRET_KEY
+# Limite do corpo das requisições (a maior é o envio da foto de perfil).
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 # Mensagem genérica usada sempre que um erro interno não pode ser exposto ao usuário.
 MSG_ERRO_INTERNO = "Ocorreu um erro inesperado. Tente novamente em instantes."
@@ -122,6 +127,11 @@ CORS(
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({"error": "Recurso não encontrado"}), 404
+
+
+@app.errorhandler(413)
+def request_too_large(e):
+    return jsonify({"error": "O arquivo é grande demais. Envie uma imagem de até 8 MB."}), 413
 
 
 @app.errorhandler(405)
@@ -252,6 +262,16 @@ def init_db():
                     REFERENCES Usuarios(id) ON DELETE CASCADE
             ) {_OPCOES_TABELA}
         """)
+        # Foto de perfil (JPEG 256x256 já reprocessado pelo servidor, sem metadados).
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS FotoPerfil (
+                usuario_id INT NOT NULL PRIMARY KEY,
+                imagem MEDIUMBLOB NOT NULL,
+                atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT fk_foto_usuario FOREIGN KEY (usuario_id)
+                    REFERENCES Usuarios(id) ON DELETE CASCADE
+            ) {_OPCOES_TABELA}
+        """)
         # Pedidos de "esqueci minha senha". Guarda só o SHA-256 do token (nunca o token).
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS RedefinicaoSenha (
@@ -328,12 +348,15 @@ def me():
     try:
         conn = get_db()
         cursor = conn.cursor(DictCursor)
-        cursor.execute("SELECT id, nome, email FROM Usuarios WHERE id = %s",
+        cursor.execute("""SELECT u.id, u.nome, u.email, (f.usuario_id IS NOT NULL) AS tem_foto
+                          FROM Usuarios u LEFT JOIN FotoPerfil f ON f.usuario_id = u.id
+                          WHERE u.id = %s""",
                        (request.current_user["usuario_id"],))
         row = cursor.fetchone()
         conn.close()
         if row:
-            return jsonify({"id": row["id"], "nome": row["nome"], "email": row["email"]})
+            return jsonify({"id": row["id"], "nome": row["nome"], "email": row["email"],
+                            "tem_foto": bool(row["tem_foto"])})
         return jsonify({"error": "Usuário não encontrado"}), 404
     except Exception as e:
         log_erro("me", e)
@@ -553,6 +576,95 @@ def api_redefinir_senha():
         log_erro("api_redefinir_senha", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
     return jsonify({"message": "Senha alterada. Entre com a nova senha."})
+
+
+# ── Foto de perfil ────────────────────────────────────────────────────────────
+
+FOTO_LADO = 256
+FOTO_FORMATOS = {"JPEG", "PNG", "WEBP"}
+MSG_FOTO_INVALIDA = "Não consegui ler essa imagem. Envie uma foto JPG, PNG ou WEBP."
+
+
+def processar_foto(dados):
+    """Valida e normaliza a foto: só JPEG/PNG/WEBP, gira conforme o EXIF, recorta no
+    centro em quadrado de 256x256 e regrava em JPEG. Regravar apaga todos os
+    metadados (inclusive a localização GPS da câmera). Lança ValueError se inválida."""
+    if not dados:
+        raise ValueError("Escolha uma foto.")
+    try:
+        with warnings.catch_warnings():
+            # Imagens gigantes (ex.: "bomba de descompressão") viram erro, não travam o servidor.
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            Image.MAX_IMAGE_PIXELS = 40_000_000
+            with Image.open(BytesIO(dados)) as teste:
+                if teste.format not in FOTO_FORMATOS:
+                    raise ValueError(MSG_FOTO_INVALIDA)
+                teste.verify()
+            with Image.open(BytesIO(dados)) as img:
+                img = ImageOps.exif_transpose(img)
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGBA")
+                    fundo = Image.new("RGB", img.size, (255, 255, 255))
+                    fundo.paste(img, mask=img.getchannel("A"))
+                    img = fundo
+                else:
+                    img = img.convert("RGB")
+                img = ImageOps.fit(img, (FOTO_LADO, FOTO_LADO), Image.Resampling.LANCZOS)
+                saida = BytesIO()
+                img.save(saida, format="JPEG", quality=85, optimize=True)
+                return saida.getvalue()
+    except ValueError:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning,
+            OSError, SyntaxError) as e:
+        raise ValueError(MSG_FOTO_INVALIDA) from e
+
+
+@app.route("/api/usuario/foto", methods=["GET", "PUT", "DELETE"])
+@login_required
+def api_foto_perfil():
+    uid = request.current_user["usuario_id"]
+    if request.method == "PUT":
+        arquivo = request.files.get("foto")
+        try:
+            jpeg = processar_foto(arquivo.read() if arquivo else b"")
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        try:
+            conn = get_db()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""INSERT INTO FotoPerfil (usuario_id, imagem) VALUES (%s, %s)
+                                  ON DUPLICATE KEY UPDATE imagem = VALUES(imagem)""", (uid, jpeg))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            log_erro("api_foto_perfil (PUT)", e)
+            return jsonify({"error": MSG_ERRO_BANCO}), 500
+        return jsonify({"message": "Foto atualizada!", "tem_foto": True})
+
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            if request.method == "DELETE":
+                cursor.execute("DELETE FROM FotoPerfil WHERE usuario_id = %s", (uid,))
+                conn.commit()
+                return jsonify({"message": "Foto removida.", "tem_foto": False})
+            cursor.execute("SELECT imagem FROM FotoPerfil WHERE usuario_id = %s", (uid,))
+            row = cursor.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        log_erro(f"api_foto_perfil ({request.method})", e)
+        return jsonify({"error": MSG_ERRO_BANCO}), 500
+    if not row:
+        return jsonify({"error": "Sem foto de perfil."}), 404
+    resposta = send_file(BytesIO(row[0]), mimetype="image/jpeg")
+    # Foto é dado pessoal: nada de cache compartilhado.
+    resposta.headers["Cache-Control"] = "private, no-store"
+    return resposta
 
 
 @app.route("/api/logout")
