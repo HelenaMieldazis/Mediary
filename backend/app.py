@@ -1,6 +1,9 @@
 import os
 import re
 import time
+import hashlib
+import secrets
+import threading
 import jwt
 import logging
 import pymysql
@@ -17,6 +20,7 @@ from flask import request, jsonify, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import ia_service
+import email_service
 from relatorio_pdf import gerar_pdf_relatorio
 
 load_dotenv()
@@ -248,6 +252,21 @@ def init_db():
                     REFERENCES Usuarios(id) ON DELETE CASCADE
             ) {_OPCOES_TABELA}
         """)
+        # Pedidos de "esqueci minha senha". Guarda só o SHA-256 do token (nunca o token).
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS RedefinicaoSenha (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                usuario_id INT NOT NULL,
+                token_hash CHAR(64) NOT NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expira_em DATETIME NOT NULL,
+                usado_em DATETIME NULL,
+                UNIQUE KEY uq_redefinicao_token (token_hash),
+                KEY ix_redefinicao_usuario (usuario_id, criado_em),
+                CONSTRAINT fk_redefinicao_usuario FOREIGN KEY (usuario_id)
+                    REFERENCES Usuarios(id) ON DELETE CASCADE
+            ) {_OPCOES_TABELA}
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -426,6 +445,114 @@ def update_senha():
     except Exception as e:
         log_erro("update_senha", e)
         return jsonify({"error": MSG_ERRO_BANCO}), 500
+
+
+# ── Esqueci minha senha ───────────────────────────────────────────────────────
+
+REDEFINICAO_MINUTOS = 30
+REDEFINICAO_MAX_POR_HORA = 3
+MSG_REDEFINICAO_PEDIDA = ("Se houver uma conta com esse e-mail, enviamos um link para criar uma nova senha. "
+                          "Confira a caixa de entrada e o spam.")
+MSG_LINK_INVALIDO = "Este link é inválido ou expirou. Peça um novo em \"Esqueci minha senha\"."
+
+
+def _hash_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _url_do_app():
+    """Endereço público do site, para montar o link do e-mail."""
+    url = (os.environ.get("APP_URL") or "").strip()
+    if not url:
+        url = next((o for o in _allowed_origins if o.startswith("https://")), "") or \
+              (_allowed_origins[0] if _allowed_origins else "http://localhost")
+    return url.rstrip("/")
+
+
+def _em_segundo_plano(funcao, *args):
+    """Envia o e-mail sem segurar a resposta: assim o tempo de resposta não revela
+    se o e-mail existe ou não."""
+    threading.Thread(target=funcao, args=args, daemon=True).start()
+
+
+def _enviar_email_redefinicao(email, nome, link):
+    try:
+        email_service.enviar_redefinicao_senha(email, nome, link, REDEFINICAO_MINUTOS)
+    except Exception as e:
+        log_erro("envio do e-mail de redefinição", e)
+
+
+@app.route("/api/senha/esqueci", methods=["POST"])
+def api_esqueci_senha():
+    """Sempre responde a mesma coisa, exista ou não a conta (não revela quem é usuário)."""
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower() if isinstance(data.get("email"), str) else ""
+    if not email or "@" not in email or len(email) > 255:
+        return jsonify({"error": "Informe um e-mail válido."}), 400
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor(DictCursor)
+            cursor.execute("SELECT id, nome, email FROM Usuarios WHERE email = %s", (email,))
+            usuario = cursor.fetchone()
+            if usuario:
+                cursor.execute("""SELECT COUNT(*) AS n FROM RedefinicaoSenha
+                                  WHERE usuario_id = %s AND criado_em > UTC_TIMESTAMP() - INTERVAL 1 HOUR""",
+                               (usuario["id"],))
+                if cursor.fetchone()["n"] < REDEFINICAO_MAX_POR_HORA:
+                    token = secrets.token_urlsafe(32)
+                    # Um pedido novo invalida os anteriores ainda não usados.
+                    cursor.execute("""UPDATE RedefinicaoSenha SET usado_em = UTC_TIMESTAMP()
+                                      WHERE usuario_id = %s AND usado_em IS NULL""", (usuario["id"],))
+                    cursor.execute("""INSERT INTO RedefinicaoSenha (usuario_id, token_hash, expira_em)
+                                      VALUES (%s, %s, UTC_TIMESTAMP() + INTERVAL %s MINUTE)""",
+                                   (usuario["id"], _hash_token(token), REDEFINICAO_MINUTOS))
+                    conn.commit()
+                    link = f"{_url_do_app()}/redefinir-senha?token={token}"
+                    _em_segundo_plano(_enviar_email_redefinicao, usuario["email"], usuario["nome"], link)
+        finally:
+            conn.close()
+    except Exception as e:
+        log_erro("api_esqueci_senha", e)
+        return jsonify({"error": MSG_ERRO_BANCO}), 500
+    return jsonify({"message": MSG_REDEFINICAO_PEDIDA})
+
+
+@app.route("/api/senha/redefinir", methods=["POST"])
+def api_redefinir_senha():
+    data = request.get_json(silent=True) or {}
+    token = data.get("token")
+    senha_nova = data.get("senha_nova")
+    if not isinstance(token, str) or not (20 <= len(token) <= 200):
+        return jsonify({"error": MSG_LINK_INVALIDO}), 400
+    if not isinstance(senha_nova, str):
+        return jsonify({"error": "Informe a nova senha."}), 400
+    erro_senha = validar_senha(senha_nova)
+    if erro_senha:
+        return jsonify({"error": erro_senha}), 400
+    try:
+        conn = get_db()
+        try:
+            cursor = conn.cursor(DictCursor)
+            # FOR UPDATE: dois cliques simultâneos no mesmo link não usam o token duas vezes.
+            cursor.execute("""SELECT id, usuario_id FROM RedefinicaoSenha
+                              WHERE token_hash = %s AND usado_em IS NULL AND expira_em > UTC_TIMESTAMP()
+                              FOR UPDATE""", (_hash_token(token),))
+            pedido = cursor.fetchone()
+            if not pedido:
+                conn.rollback()
+                return jsonify({"error": MSG_LINK_INVALIDO}), 400
+            cursor.execute("UPDATE Usuarios SET senha_hash = %s WHERE id = %s",
+                           (generate_password_hash(senha_nova), pedido["usuario_id"]))
+            cursor.execute("""UPDATE RedefinicaoSenha SET usado_em = UTC_TIMESTAMP()
+                              WHERE usuario_id = %s AND usado_em IS NULL""", (pedido["usuario_id"],))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        log_erro("api_redefinir_senha", e)
+        return jsonify({"error": MSG_ERRO_BANCO}), 500
+    return jsonify({"message": "Senha alterada. Entre com a nova senha."})
 
 
 @app.route("/api/logout")
