@@ -210,7 +210,7 @@ export const ModalViewSintomas: React.FC<Props> = ({ isOpen, onClose }) => {
         onClick={handleClose}
       />
 
-      <div className='fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[94%] max-w-sm bg-gray-50 rounded-3xl p-6 shadow-xl animate-fade-in border-4 border-white/50'>
+      <div className='fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[94%] max-w-sm max-h-[92dvh] overflow-y-auto overscroll-contain bg-gray-50 rounded-3xl p-[clamp(1rem,5vw,1.5rem)] shadow-xl animate-fade-in border-4 border-white/50'>
         {editingSintomaId && editingSintoma ? (
           // Edit View
           <div className='animate-fade-in'>
@@ -392,7 +392,7 @@ export const ModalViewSintomas: React.FC<Props> = ({ isOpen, onClose }) => {
                 </p>
               </div>
             ) : (
-              <div className='space-y-4 max-h-[50vh] overflow-y-auto pr-2 pb-2'>
+              <div className='space-y-4 max-h-[50dvh] overflow-y-auto pr-2 pb-2'>
                 {sintomasDoDia.map((sintoma) => {
                   const Icon = getIconForType(sintoma.tipo);
                   // const isConfirming = confirmDeleteId === sintoma.id;

@@ -44,9 +44,11 @@ export const CalendarioPage = () => {
   };
 
   return (
-    <div className='flex flex-col h-full bg-brand-blue relative overflow-hidden'>
+    // h-dvh: exatamente a altura visível do celular (já descontando a barra do
+    // navegador). Só em telas muito baixas (celular deitado) a página rola.
+    <div className='flex flex-col h-dvh min-h-[34rem] bg-brand-blue relative overflow-hidden'>
       {/* Header */}
-      <div className='pt-8 px-6 pb-4 flex flex-col gap-4 animate-fade-in'>
+      <div className='pt-[calc(env(safe-area-inset-top)+clamp(0.75rem,3dvh,2rem))] px-6 pb-[clamp(0.25rem,1.5dvh,1rem)] flex flex-col gap-[clamp(0.5rem,2dvh,1rem)] animate-fade-in shrink-0'>
         <div className='flex justify-between items-center'>
           <button
             onClick={() => setSelectedDate(new Date())}
@@ -95,14 +97,15 @@ export const CalendarioPage = () => {
         </div>
       </div>
 
-      <div className='flex-1 px-6 bg-transparent overflow-hidden flex flex-col justify-center'>
-        <div className='scale-[0.95] origin-top'>
+      {/* O calendário ocupa o espaço que sobrar; em telas altas, no máximo 36rem (o espaçamento do design original). */}
+      <div className='flex-1 min-h-0 px-[clamp(0.75rem,5vw,1.5rem)] flex flex-col justify-center'>
+        <div className='w-full h-full max-h-[36rem] min-h-0'>
           <Calendar onDayClick={() => setIsViewOpen(true)} />
         </div>
       </div>
 
       {/* Bottom Area with + */}
-      <div className='bg-gray-50 rounded-t-[40px] pt-2 pb-6 flex flex-row items-center justify-center gap-4 w-full mt-auto relative z-10 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]'>
+      <div className='bg-gray-50 rounded-t-[40px] pt-2 pb-[calc(env(safe-area-inset-bottom)+clamp(0.5rem,2dvh,1.5rem))] flex flex-row items-center justify-center gap-4 w-full shrink-0 relative z-10 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]'>
         {iaDisponivel && (
           <button
             onClick={() => setIsIaOpen(true)}
@@ -114,9 +117,10 @@ export const CalendarioPage = () => {
         )}
         <button
           onClick={() => setIsAddOpen(true)}
+          aria-label='Adicionar sintoma'
           className='text-brand-blue flex items-center justify-center active:scale-95 transition-transform'
         >
-          <Plus size={64} strokeWidth={1.5} />
+          <Plus className='size-[clamp(3rem,8dvh,4rem)]' strokeWidth={1.5} />
         </button>
       </div>
 
