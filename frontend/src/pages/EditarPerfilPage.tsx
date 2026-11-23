@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft } from "lucide-react";
+import { Camera, ChevronLeft, Loader2 } from "lucide-react";
+import { Avatar } from "../components/Avatar";
+import { prepararFoto } from "../utils/prepararFoto";
 import { useAuthStore } from "../store/useAuthStore";
 import { Input } from "../components/Input";
 import { Button } from "../components/Button";
@@ -11,7 +13,40 @@ export const EditarPerfilPage = () => {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
   const updatePerfil = useAuthStore((state) => state.updatePerfil);
+  const enviarFoto = useAuthStore((state) => state.enviarFoto);
+  const removerFoto = useAuthStore((state) => state.removerFoto);
+  const temFoto = useAuthStore((state) => !!state.fotoUrl);
   const [loading, setLoading] = useState(false);
+  const [salvandoFoto, setSalvandoFoto] = useState(false);
+  const seletorFoto = useRef<HTMLInputElement>(null);
+
+  const escolherFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const arquivo = e.target.files?.[0];
+    e.target.value = ""; // permite escolher a mesma foto de novo
+    if (!arquivo) return;
+    setSalvandoFoto(true);
+    try {
+      await enviarFoto(await prepararFoto(arquivo));
+      toast.success("Foto atualizada!", { position: "top-center" });
+    } catch (error) {
+      const msg = error instanceof Error && !("isAxiosError" in error) ? error.message : getErrorMessage(error, "Não foi possível salvar a foto.");
+      toast.error(msg, { position: "top-center" });
+    } finally {
+      setSalvandoFoto(false);
+    }
+  };
+
+  const tirarFoto = async () => {
+    setSalvandoFoto(true);
+    try {
+      await removerFoto();
+      toast.success("Foto removida.", { position: "top-center" });
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Não foi possível remover a foto."), { position: "top-center" });
+    } finally {
+      setSalvandoFoto(false);
+    }
+  };
 
   const [nome, setNome] = useState(user?.nome || "");
   const [email, setEmail] = useState(user?.email || "");
@@ -57,14 +92,33 @@ export const EditarPerfilPage = () => {
         </div>
       </div>
       <div className='px-6 -mt-16 flex flex-col items-center mb-8'>
-        <div className='w-32 h-32 bg-white rounded-full p-1 shadow-lg mb-4'>
-          <div className='w-full h-full bg-brand-teal rounded-full overflow-hidden flex items-center justify-center'>
-            {/* Foto Mockada - Pode ser substituída por uma tag img no futuro */}
-            <span className='text-white text-4xl font-black'>
-              {user?.nome?.charAt(0).toUpperCase() || "U"}
-            </span>
-          </div>
+        <div className='relative w-32 h-32 bg-white rounded-full p-1 shadow-lg mb-4'>
+          <button
+            type='button'
+            onClick={() => seletorFoto.current?.click()}
+            disabled={salvandoFoto}
+            aria-label={temFoto ? "Trocar foto de perfil" : "Adicionar foto de perfil"}
+            className='w-full h-full rounded-full active:scale-95 transition-transform'
+          >
+            <Avatar />
+          </button>
+          <span className='absolute bottom-1 right-1 w-10 h-10 bg-brand-navy text-white rounded-full flex items-center justify-center border-4 border-white shadow-md pointer-events-none'>
+            {salvandoFoto ? <Loader2 size={16} className='animate-spin' /> : <Camera size={16} />}
+          </span>
+          {/* accept=image/*: no celular oferece tirar foto com a câmera ou escolher da galeria. */}
+          <input ref={seletorFoto} type='file' accept='image/*' className='hidden' onChange={escolherFoto} />
         </div>
+        {temFoto ? (
+          <button type='button' onClick={tirarFoto} disabled={salvandoFoto}
+            className='text-xs font-bold text-brand-danger/80 hover:text-brand-danger mb-3'>
+            Remover foto
+          </button>
+        ) : (
+          <button type='button' onClick={() => seletorFoto.current?.click()} disabled={salvandoFoto}
+            className='text-xs font-bold text-brand-teal mb-3'>
+            Adicionar foto
+          </button>
+        )}
         <h2 className='text-2xl font-black text-brand-navy'>
           {user?.nome || "Usuário"}
         </h2>

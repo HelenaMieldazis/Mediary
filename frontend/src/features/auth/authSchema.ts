@@ -4,7 +4,9 @@ export const userSchema = z.object({
   id: z.number(),
   nome: z.string(),
   email: z.string().email(),
-  criado_em: z.string()
+  criado_em: z.string(),
+  // Se a pessoa cadastrou foto de perfil (a imagem vem de GET /api/usuario/foto).
+  tem_foto: z.boolean().optional()
 });
 
 export type User = z.infer<typeof userSchema>;

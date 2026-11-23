@@ -5,6 +5,8 @@ import { limparCacheApi } from '../utils/limparCacheApi';
 
 interface AuthState {
   user: User | null;
+  /** URL local (blob:) da foto de perfil, ou null se não houver. */
+  fotoUrl: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   
@@ -14,16 +16,26 @@ interface AuthState {
   checkAuth: () => Promise<void>;
   updatePerfil: (nome: string, email: string) => Promise<void>;
   updateSenha: (senhaAtual: string, novaSenha: string) => Promise<void>;
+  carregarFoto: () => Promise<void>;
+  enviarFoto: (foto: Blob) => Promise<void>;
+  removerFoto: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+function trocarFotoUrl(antiga: string | null, nova: string | null): string | null {
+  if (antiga) URL.revokeObjectURL(antiga);
+  return nova;
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
+  fotoUrl: null,
   isAuthenticated: false,
   isLoading: true,
 
   login: async (email, senha) => {
     const data = await authService.login(email, senha);
     set({ user: data.user, isAuthenticated: true });
+    void get().carregarFoto();
   },
 
   cadastro: async (nome, email, senha) => {
@@ -34,7 +46,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       await authService.logout();
     } finally {
-      set({ user: null, isAuthenticated: false });
+      set((s) => ({ user: null, isAuthenticated: false, fotoUrl: trocarFotoUrl(s.fotoUrl, null) }));
       await limparCacheApi();
     }
   },
@@ -44,6 +56,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const data = await authService.me();
       set({ user: data, isAuthenticated: true });
+      if (data.tem_foto) void get().carregarFoto();
     } catch (error) {
       set({ user: null, isAuthenticated: false });
     } finally {
@@ -60,5 +73,29 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   updateSenha: async (senhaAtual, novaSenha) => {
     await authService.updateSenha(senhaAtual, novaSenha);
+  },
+
+  carregarFoto: async () => {
+    try {
+      const blob = await authService.baixarFoto();
+      set((s) => ({ fotoUrl: trocarFotoUrl(s.fotoUrl, URL.createObjectURL(blob)) }));
+    } catch {
+      // 404 = sem foto; qualquer outro erro: mostra a inicial do nome.
+      set((s) => ({ fotoUrl: trocarFotoUrl(s.fotoUrl, null) }));
+    }
+  },
+
+  enviarFoto: async (foto) => {
+    await authService.enviarFoto(foto);
+    set((s) => ({ user: s.user ? { ...s.user, tem_foto: true } : null }));
+    await get().carregarFoto();
+  },
+
+  removerFoto: async () => {
+    await authService.removerFoto();
+    set((s) => ({
+      user: s.user ? { ...s.user, tem_foto: false } : null,
+      fotoUrl: trocarFotoUrl(s.fotoUrl, null),
+    }));
   }
 }));
