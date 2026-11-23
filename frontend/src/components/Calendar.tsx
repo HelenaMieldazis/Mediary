@@ -54,74 +54,81 @@ export const Calendar: React.FC<{ onDayClick?: (day: number) => void }> = ({ onD
     return calendarioInfo[dateStr] || 0;
   };
 
+  // Layout fluido: o calendário ocupa a altura que o pai der (flex-1). A grade tem
+  // 6 linhas iguais e cada célula é um "container" (CSS container queries): o botão
+  // do dia é um quadrado do tamanho que couber na célula, no máximo 48 px.
+  const celula = "[container-type:size] min-h-0 flex items-center justify-center";
+  const tamanhoDia = "size-[min(100cqw,100cqh,3rem)] text-[clamp(0.8rem,42cqh,1.25rem)]";
+
   return (
-    <div className="w-full py-4">
-      <div className="flex items-center justify-between mb-8 px-2">
-        <button onClick={handlePrevMonth} className="w-12 h-12 bg-white rounded-full flex items-center justify-center text-brand-navy shadow-sm active:scale-95 transition-transform">
+    <div className="w-full h-full min-h-0 flex flex-col py-[clamp(0.25rem,1.5dvh,1rem)]">
+      <div className="flex items-center justify-between mb-[clamp(0.5rem,3dvh,2rem)] px-2 shrink-0">
+        <button onClick={handlePrevMonth} aria-label="Mês anterior" className="size-[clamp(2.25rem,6dvh,3rem)] bg-white rounded-full flex items-center justify-center text-brand-navy shadow-sm active:scale-95 transition-transform">
           <ChevronLeft size={24} />
         </button>
-        <h2 className="text-brand-navy font-bold text-xl">{monthNames[month]} {year}</h2>
-        <button onClick={handleNextMonth} className="w-12 h-12 bg-white rounded-full flex items-center justify-center text-brand-navy shadow-sm active:scale-95 transition-transform">
+        <h2 className="text-brand-navy font-bold text-[clamp(1.05rem,2.6dvh,1.25rem)]">{monthNames[month]} {year}</h2>
+        <button onClick={handleNextMonth} aria-label="Próximo mês" className="size-[clamp(2.25rem,6dvh,3rem)] bg-white rounded-full flex items-center justify-center text-brand-navy shadow-sm active:scale-95 transition-transform">
           <ChevronRight size={24} />
         </button>
       </div>
-      
+
       {/* Cabeçalho dos dias da semana */}
-      <div className="grid grid-cols-7 gap-y-4 text-center mb-4">
+      <div className="grid grid-cols-7 text-center mb-[clamp(0.25rem,1.5dvh,1rem)] shrink-0">
         {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((day, i) => (
            <div key={`weekday-${i}`} className="text-brand-navy/60 text-sm font-bold">{day}</div>
         ))}
       </div>
 
-      <div className="grid grid-cols-7 gap-y-6 text-center mb-6">
+      <div className="grid grid-cols-7 grid-rows-6 flex-1 min-h-0 text-center">
         {prevMonthDays.map((day, i) => (
-          <div key={`prev-${i}`} className="h-12 flex items-center justify-center text-brand-navy/30 text-xl font-medium">
-            {day}
+          <div key={`prev-${i}`} className={celula}>
+            <span className={`${tamanhoDia} flex items-center justify-center text-brand-navy/30 font-medium`}>{day}</span>
           </div>
         ))}
 
         {currentMonthDays.map(day => {
-          const isSelected = selectedDate.getDate() === day && 
-                             selectedDate.getMonth() === month && 
+          const isSelected = selectedDate.getDate() === day &&
+                             selectedDate.getMonth() === month &&
                              selectedDate.getFullYear() === year;
-          
+
           const hasSintoma = hasSintomaOnDay(day);
           const sintomaCount = sintomaCountOnDay(day);
-          
+
           return (
-            <button
-              key={day}
-              onClick={() => handleDayClick(day)}
-              className={`h-12 flex flex-col items-center justify-center text-xl font-medium transition-all mx-auto w-12 relative rounded-2xl
-                ${isSelected
-                  ? 'bg-brand-active text-white ring-2 ring-brand-active ring-offset-2 ring-offset-brand-blue'
-                  : hasSintoma
-                    ? 'bg-brand-blue/25 ring-1 ring-brand-blue/40 text-brand-navy font-bold hover:bg-brand-blue/30'
-                    : 'text-brand-navy hover:bg-black/5'
-                }
-              `}
-            >
-              <span>{day}</span>
-              {hasSintoma && (
-                sintomaCount > 1 ? (
-                  <span
-                    className={`absolute -bottom-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[9px] font-black leading-none
-                      ${isSelected ? 'bg-white text-brand-active' : 'bg-brand-blue-dark text-white'}
-                    `}
-                  >
-                    {sintomaCount}
-                  </span>
-                ) : (
-                  <span className={`w-2.5 h-2.5 rounded-full absolute -bottom-1 ring-2 ring-white ${isSelected ? 'bg-white' : 'bg-brand-blue-dark'}`} />
-                )
-              )}
-            </button>
+            <div key={day} className={celula}>
+              <button
+                onClick={() => handleDayClick(day)}
+                className={`${tamanhoDia} flex flex-col items-center justify-center font-medium transition-all relative rounded-2xl
+                  ${isSelected
+                    ? 'bg-brand-active text-white ring-2 ring-brand-active ring-offset-2 ring-offset-brand-blue'
+                    : hasSintoma
+                      ? 'bg-brand-blue/25 ring-1 ring-brand-blue/40 text-brand-navy font-bold hover:bg-brand-blue/30'
+                      : 'text-brand-navy hover:bg-black/5'
+                  }
+                `}
+              >
+                <span>{day}</span>
+                {hasSintoma && (
+                  sintomaCount > 1 ? (
+                    <span
+                      className={`absolute -bottom-1 min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[9px] font-black leading-none
+                        ${isSelected ? 'bg-white text-brand-active' : 'bg-brand-blue-dark text-white'}
+                      `}
+                    >
+                      {sintomaCount}
+                    </span>
+                  ) : (
+                    <span className={`w-2.5 h-2.5 rounded-full absolute -bottom-1 ring-2 ring-white ${isSelected ? 'bg-white' : 'bg-brand-blue-dark'}`} />
+                  )
+                )}
+              </button>
+            </div>
           );
         })}
 
         {nextMonthDays.map((day, i) => (
-          <div key={`next-${i}`} className="h-12 flex items-center justify-center text-brand-navy/30 text-xl font-medium">
-            {day}
+          <div key={`next-${i}`} className={celula}>
+            <span className={`${tamanhoDia} flex items-center justify-center text-brand-navy/30 font-medium`}>{day}</span>
           </div>
         ))}
       </div>

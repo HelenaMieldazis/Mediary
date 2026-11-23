@@ -191,7 +191,7 @@ export const BottomSheetAddSintoma: React.FC<Props> = ({ isOpen, onClose }) => {
         onClick={handleClose}
       />
 
-      <div className='fixed bottom-0 left-0 right-0 z-50 bg-gray-50 rounded-t-[40px] px-6 pb-8 pt-4 max-h-[90vh] overflow-y-auto animate-slide-up'>
+      <div className='fixed bottom-0 left-0 right-0 mx-auto w-full max-w-md z-50 bg-gray-50 rounded-t-[40px] px-6 pb-[calc(env(safe-area-inset-bottom)+2rem)] pt-4 max-h-[90dvh] overflow-y-auto overscroll-contain animate-slide-up'>
         <div className='flex justify-center mb-2'>
           <button onClick={handleClose} className='p-2 text-brand-blue'>
             <ChevronDown size={40} strokeWidth={3} />

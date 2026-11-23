@@ -106,7 +106,7 @@ export const SegurancaPrivacidadePage = () => {
             className='fixed inset-0 bg-black/40 z-[60] animate-fade-in'
             onClick={() => setIsTermsOpen(false)}
           />
-          <div className='fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white z-[70] w-[92%] max-w-sm rounded-[40px] p-8 shadow-2xl animate-fade-in border-4 border-white/50 max-h-[85vh] flex flex-col'>
+          <div className='fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white z-[70] w-[92%] max-w-sm rounded-[40px] p-8 shadow-2xl animate-fade-in border-4 border-white/50 max-h-[85dvh] flex flex-col'>
             <div className='flex justify-between items-center mb-6'>
               <h3 className='font-black text-brand-navy text-2xl uppercase tracking-tighter'>
                 Termos de Uso
