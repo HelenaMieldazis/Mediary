@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Mediary - backend Flask em EC2 (Docker + Caddy com HTTPS) e MySQL 8.4 no RDS sem
+  Mediary - site React e API Flask em EC2 (Docker + Caddy com HTTPS) e MySQL 8.4 no RDS sem
   acesso publico. Segredos no SSM Parameter Store. Logs no CloudWatch com retencao curta.
   NAO crie esta stack antes de ativar o orcamento (orcamento.yml) e os alertas de cobranca.
 
@@ -258,7 +258,7 @@ Resources:
 
 Outputs:
   IpPublico:
-    Description: Aponte o DNS do dominio da API (registro A) para este IP.
+    Description: No DNS do Registro.br, crie registros A (raiz e www) apontando para este IP.
     Value: !Ref IpFixo
   InstanceId:
     Value: !Ref Servidor

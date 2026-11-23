@@ -22,7 +22,7 @@
 
 | Camada | Tecnologias |
 |---|---|
-| **Frontend** | React 19 + TypeScript, Vite, Tailwind CSS, Zustand, Axios (hospedado na Vercel) |
+| **Frontend** | React 19 + TypeScript, Vite, Tailwind CSS, Zustand, Axios |
 | **Backend** | Flask (Python), Gunicorn, PyJWT, PyMySQL, ReportLab |
 | **Banco de Dados** | MySQL 8 (local: Docker; produção: AWS RDS) |
 | **IA** | API da Anthropic (Claude), só no backend |
@@ -91,7 +91,7 @@ O backend cria as tabelas sozinho ao subir (`init_db`).
 | `IA_MODELO_EXTRACAO`, `IA_MODELO_RESUMO` | Modelos da IA (padrões: `claude-haiku-5-5`, `claude-sonnet-5-5`) |
 | `IA_LIMITE_DIARIO_INTERPRETAR`, `IA_LIMITE_DIARIO_RESUMO` | Cota diária por usuário (padrões: 40 e 10) |
 
-**Frontend** (build): `VITE_API_URL`.
+**Frontend** (build): `VITE_API_URL`. Só no desenvolvimento local (`http://localhost:5000`); em produção fica vazio e o site chama `/api` no mesmo domínio.
 
 ## Testes
 
@@ -126,7 +126,7 @@ Teste manual com a IA de verdade (gasta créditos): `python testar_ia.py`.
 
 ## Deploy em produção (AWS)
 
-Backend em EC2 (Docker + Caddy com HTTPS) e MySQL no RDS, sem acesso público. Frontend na Vercel.
+Site e API na mesma EC2 (Docker + Caddy com HTTPS, num único domínio com DNS no Registro.br) e MySQL no RDS, sem acesso público.
 Guia completo, custos e checklist: **[`deploy/aws/README.md`](./deploy/aws/README.md)**.
 
 ## Instalando como App (PWA)

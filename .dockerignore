@@ -1,0 +1,10 @@
+# Vale para builds com contexto na raiz (deploy/aws/Dockerfile.web).
+.git
+**/node_modules
+**/dist
+Design
+Documentos
+**/.env
+**/*.env
+**/__pycache__
+dumps
