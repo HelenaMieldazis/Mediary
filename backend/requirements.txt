@@ -11,3 +11,5 @@ gunicorn
 PyJWT
 reportlab
 anthropic>=2.9.0
+# Envio de e-mail pelo Amazon SES (recuperação de senha).
+boto3

@@ -90,6 +90,9 @@ O backend cria as tabelas sozinho ao subir (`init_db`).
 | `ANTHROPIC_API_KEY` | Chave da API da Anthropic (sem ela, a IA fica oculta) |
 | `IA_MODELO_EXTRACAO`, `IA_MODELO_RESUMO` | Modelos da IA (padrões: `claude-haiku-5-5`, `claude-sonnet-5-5`) |
 | `IA_LIMITE_DIARIO_INTERPRETAR`, `IA_LIMITE_DIARIO_RESUMO` | Cota diária por usuário (padrões: 40 e 10) |
+| `EMAIL_REMETENTE` | Remetente do e-mail de "Esqueci minha senha" (Amazon SES). Sem ela, em desenvolvimento o link aparece no log |
+| `APP_URL` | Endereço público do site, usado no link do e-mail |
+| `SES_REGIAO` | Região do SES (padrão: `AWS_REGION` ou `sa-east-1`) |
 
 **Frontend** (build): `VITE_API_URL`. Só no desenvolvimento local (`http://localhost:5000`); em produção fica vazio e o site chama `/api` no mesmo domínio.
 

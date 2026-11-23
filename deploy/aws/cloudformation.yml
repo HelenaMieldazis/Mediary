@@ -45,6 +45,13 @@ Parameters:
     Default: "true"
     AllowedValues: ["true", "false"]
     Description: Use "false" se a conta ja tiver o provedor OIDC token.actions.githubusercontent.com.
+  Dominio:
+    Type: String
+    Default: ""
+    Description: >-
+      Dominio do site (ex.: mediarymedico.com.br), sem https e sem www. Com ele, a stack cria a
+      identidade do dominio no Amazon SES (e-mail de "esqueci minha senha") e libera o envio.
+      Vazio = sem e-mail.
   LogRetentionDays:
     Type: Number
     Default: 7
@@ -53,6 +60,7 @@ Parameters:
 Conditions:
   ComGitHub: !Not [!Equals [!Ref GitHubRepo, ""]]
   CriarOidc: !And [!Condition ComGitHub, !Equals [!Ref CriarProvedorOidcGitHub, "true"]]
+  ComEmail: !Not [!Equals [!Ref Dominio, ""]]
   ArmInstance: !Or [!Equals [!Ref InstanceType, t4g.micro], !Equals [!Ref InstanceType, t4g.small]]
 
 Resources:
@@ -159,6 +167,17 @@ Resources:
               - Effect: Allow
                 Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
                 Resource: !Sub ${LogGroup.Arn}
+              - !If
+                - ComEmail
+                - Effect: Allow
+                  Action: [ses:SendEmail]
+                  # identity/* porque, no modo sandbox do SES, o destinatario verificado
+                  # tambem e avaliado; a condicao restringe o remetente ao dominio.
+                  Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                  Condition:
+                    StringLike:
+                      ses:FromAddress: !Sub "*@${Dominio}"
+                - !Ref AWS::NoValue
 
   PerfilBackend:
     Type: AWS::IAM::InstanceProfile
@@ -180,7 +199,9 @@ Resources:
       SecurityGroupIds: [!Ref SgBackend]
       MetadataOptions:
         HttpTokens: required          # IMDSv2
-        HttpPutResponseHopLimit: 1    # conteineres nao alcancam as credenciais da instancia
+        # 2 = o conteiner do backend alcanca o papel da instancia (precisa dele para o SES).
+        # O papel e minimo: le /mediary/prod/* (que o backend ja recebe), logs e envio de e-mail.
+        HttpPutResponseHopLimit: 2
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs: {VolumeSize: 16, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
@@ -208,6 +229,14 @@ Resources:
           # O primeiro deploy so funciona depois que os parametros /mediary/prod/* existirem.
           /opt/mediary/deploy/aws/servidor/atualizar.sh ${RepoBranch} || \
             echo "Primeiro deploy falhou (parametros ainda nao criados?). Rode atualizar.sh depois."
+
+  IdentidadeEmail:
+    Type: AWS::SES::EmailIdentity
+    Condition: ComEmail
+    Properties:
+      EmailIdentity: !Ref Dominio
+      DkimSigningAttributes:
+        NextSigningKeyLength: RSA_2048_BIT
 
   IpFixo:
     Type: AWS::EC2::EIP
@@ -269,3 +298,13 @@ Outputs:
     Condition: ComGitHub
     Description: Guarde como variavel AWS_DEPLOY_ROLE_ARN no ambiente "producao" do GitHub.
     Value: !GetAtt PapelDeployGitHub.Arn
+  DkimRegistro1:
+    Condition: ComEmail
+    Description: "Registro.br: Nova entrada CNAME (Nome = parte antes do dominio | Dados)"
+    Value: !Sub "${IdentidadeEmail.DkimDNSTokenName1} -> ${IdentidadeEmail.DkimDNSTokenValue1}"
+  DkimRegistro2:
+    Condition: ComEmail
+    Value: !Sub "${IdentidadeEmail.DkimDNSTokenName2} -> ${IdentidadeEmail.DkimDNSTokenValue2}"
+  DkimRegistro3:
+    Condition: ComEmail
+    Value: !Sub "${IdentidadeEmail.DkimDNSTokenName3} -> ${IdentidadeEmail.DkimDNSTokenValue3}"

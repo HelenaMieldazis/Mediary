@@ -68,7 +68,7 @@ class IntegracaoMySQL(unittest.TestCase):
         ia_service._resetar_cliente()
         conn = mediary.get_db()
         with conn.cursor() as cur:
-            for t in ("IaUso", "Sintomas", "Usuarios"):
+            for t in ("RedefinicaoSenha", "IaUso", "Sintomas", "Usuarios"):
                 cur.execute(f"DROP TABLE IF EXISTS `{t}`")
         conn.commit()
         conn.close()
@@ -114,7 +114,7 @@ class IntegracaoMySQL(unittest.TestCase):
     def test_00_esquema_utf8mb4_e_coluna_da_ia(self):
         linhas = self._sql("""SELECT TABLE_NAME, TABLE_COLLATION, ENGINE FROM information_schema.TABLES
                               WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME""")
-        self.assertEqual({l[0] for l in linhas}, {"IaUso", "Sintomas", "Usuarios"})
+        self.assertEqual({l[0] for l in linhas}, {"IaUso", "RedefinicaoSenha", "Sintomas", "Usuarios"})
         for _, coll, engine in linhas:
             self.assertEqual((coll, engine), ("utf8mb4_unicode_ci", "InnoDB"))
         # ADD COLUMN idempotente: remove a coluna e o init_db a recria.
@@ -415,6 +415,76 @@ class IntegracaoMySQL(unittest.TestCase):
 
         # Quem não consentiu não usa o resumo.
         self.assertEqual(self.client.post("/api/ia/resumo", json={}, headers=hb).status_code, 403)
+
+    # ── esqueci minha senha ──
+    def test_esqueci_e_redefinir_senha(self):
+        _, uid = self._novo_usuario("Laura Senha", "laura.senha@exemplo.com")
+        enviados = []
+        with mock.patch.object(mediary, "_em_segundo_plano", side_effect=lambda f, *a: f(*a)), \
+             mock.patch.object(mediary.email_service, "enviar_redefinicao_senha",
+                               side_effect=lambda dest, nome, link, minutos: enviados.append((dest, nome, link))), \
+             mock.patch.dict(os.environ, {"APP_URL": "https://mediary.exemplo.com.br"}):
+            # E-mail inexistente: mesma resposta, nada enviado (não revela quem tem conta).
+            r_inexistente = self.client.post("/api/senha/esqueci", json={"email": "ninguem@exemplo.com"})
+            r = self.client.post("/api/senha/esqueci", json={"email": " Laura.Senha@Exemplo.com "})
+            self.assertEqual((r.status_code, r_inexistente.status_code), (200, 200))
+            self.assertEqual(r.get_json(), r_inexistente.get_json())
+            self.assertEqual(len(enviados), 1)
+            dest, nome, link = enviados[0]
+            self.assertEqual((dest, nome), ("laura.senha@exemplo.com", "Laura Senha"))
+            self.assertTrue(link.startswith("https://mediary.exemplo.com.br/redefinir-senha?token="))
+            token = link.split("token=", 1)[1]
+            # O banco guarda só o hash do token.
+            linhas = self._sql("SELECT token_hash FROM RedefinicaoSenha WHERE usuario_id=%s", (uid,))
+            self.assertEqual(len(linhas), 1)
+            self.assertNotIn(token, str(linhas))
+            self.assertEqual(linhas[0][0], mediary._hash_token(token))
+
+            # Validações.
+            self.assertEqual(self.client.post("/api/senha/esqueci", json={"email": "sem-arroba"}).status_code, 400)
+            self.assertEqual(self.client.post("/api/senha/redefinir",
+                                              json={"token": token, "senha_nova": "fraca"}).status_code, 400)
+            self.assertEqual(self.client.post("/api/senha/redefinir",
+                                              json={"token": "x" * 43, "senha_nova": "Nova#Senha9"}).status_code, 400)
+
+            # Redefinir funciona uma vez só.
+            r = self.client.post("/api/senha/redefinir", json={"token": token, "senha_nova": "Nova#Senha9"})
+            self.assertEqual(r.status_code, 200, r.get_json())
+            self.assertEqual(self.client.post("/api/senha/redefinir",
+                                              json={"token": token, "senha_nova": "Outra#Senha9"}).status_code, 400)
+            self.assertEqual(self.client.post("/api/login", json={"email": "laura.senha@exemplo.com",
+                                                                  "senha": SENHA}).status_code, 401)
+            self.assertEqual(self.client.post("/api/login", json={"email": "laura.senha@exemplo.com",
+                                                                  "senha": "Nova#Senha9"}).status_code, 200)
+
+            # Pedido novo invalida o anterior; link expirado não vale.
+            self.client.post("/api/senha/esqueci", json={"email": "laura.senha@exemplo.com"})
+            token_velho = enviados[-1][2].split("token=", 1)[1]
+            self.client.post("/api/senha/esqueci", json={"email": "laura.senha@exemplo.com"})
+            token_novo = enviados[-1][2].split("token=", 1)[1]
+            self.assertEqual(self.client.post("/api/senha/redefinir", json={
+                "token": token_velho, "senha_nova": "Velha#Senha9"}).status_code, 400)
+            self._sql("UPDATE RedefinicaoSenha SET expira_em = UTC_TIMESTAMP() - INTERVAL 1 MINUTE "
+                      "WHERE token_hash=%s", (mediary._hash_token(token_novo),))
+            self.assertEqual(self.client.post("/api/senha/redefinir", json={
+                "token": token_novo, "senha_nova": "Expirada#9"}).status_code, 400)
+
+            # Limite: no máximo 3 pedidos por hora por conta (já foram 3).
+            n = len(enviados)
+            r = self.client.post("/api/senha/esqueci", json={"email": "laura.senha@exemplo.com"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(len(enviados), n)
+
+    def test_esqueci_senha_falha_no_envio_nao_vaza(self):
+        self._novo_usuario("Marina", "marina.falha@exemplo.com")
+        with mock.patch.object(mediary, "_em_segundo_plano", side_effect=lambda f, *a: f(*a)), \
+             mock.patch.object(mediary.email_service, "enviar_redefinicao_senha",
+                               side_effect=mediary.email_service.EmailNaoEnviado("MessageRejected")):
+            with self.assertLogs("mediary", level="ERROR") as logs:
+                r = self.client.post("/api/senha/esqueci", json={"email": "marina.falha@exemplo.com"})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("marina.falha", "\n".join(logs.output))
+        self.assertNotIn("token=", "\n".join(logs.output))
 
     def test_ia_desligada_sem_chave(self):
         h, _ = self._novo_usuario("Júlia", "julia.semchave@exemplo.com")
