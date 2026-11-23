@@ -1,6 +1,6 @@
 # Deploy do Mediary na AWS
 
-Guia para publicar o backend (Flask + MySQL) na AWS. O frontend continua na Vercel.
+Guia para publicar o Mediary inteiro na AWS: site (React), API (Flask) e MySQL (RDS), com o DNS no Registro.br.
 **Nada aqui cria recursos sozinho:** cada passo que gera custo é você quem executa.
 
 > Pesquisa feita em **22/11/2026**. Regras, créditos e preços da AWS mudam: confira
@@ -42,31 +42,31 @@ Em troca, quando os créditos acabarem a cobrança começa sem aviso. Por isso o
 
 ## 2. Arquitetura
 
-### Opções comparadas
-
-| | **A) EC2 + RDS (recomendada)** | B) Só EC2, MySQL em contêiner |
-|---|---|---|
-| Banco | RDS MySQL 8.4 db.t4g.micro, criptografado, sem IP público, TLS obrigatório, backups automáticos | MySQL no mesmo servidor; backup e atualização por sua conta |
-| Servidor | EC2 t4g.micro: Docker com gunicorn + Caddy (HTTPS automático) | EC2 t4g.small (2 GB, para caber o MySQL) |
-| Custo após os créditos (sa-east-1, estimado) | **≈ US$ 45/mês** (≈ R$ 250) | ≈ US$ 26/mês |
-| Quanto duram US$ 200 de créditos | ≈ 4 meses | ≈ 7 meses |
-| Risco | Baixo: backups e patches gerenciados pela AWS | Perder dados se o disco/instância falhar sem backup |
-
-Recomendo a **A**: atende exatamente aos requisitos (banco gerenciado e isolado) com o mínimo de operação.
-A **B** é o caminho para cortar custo depois, se você topar cuidar dos backups.
-Em `us-east-1` os preços são ~40% menores, mas `sa-east-1` (São Paulo) tem menor latência e mantém os dados no Brasil.
-
-Frontend: **continua na Vercel** (gratuito, HTTPS pronto). S3 + CloudFront também funcionaria, mas
-daria mais trabalho sem ganho real.
+Tudo na AWS, num endereço só: **`https://seudominio.com.br`**. O DNS fica no próprio Registro.br.
 
 ```
-Navegador ──HTTPS──> Vercel (frontend React)
-    │
-    └──HTTPS──> api.seudominio ──> EC2 [Caddy :443 ──> backend gunicorn :5000]
-                                          │  TLS (porta 3306, só o SG do backend)
-                                          └──> RDS MySQL (sem IP público)
-       Segredos: SSM Parameter Store (/mediary/prod/*)   Logs: CloudWatch /mediary/prod (7 dias)
+Navegador ──HTTPS──> seudominio.com.br  (registro A no DNS do Registro.br -> IP fixo da EC2)
+                         │
+                         EC2 t4g.micro
+                         ├─ web: Caddy :443  (HTTPS automático, Let's Encrypt)
+                         │    ├─ /          -> frontend React (arquivos estáticos)
+                         │    └─ /api/*     -> backend
+                         └─ backend: Flask/gunicorn :5000 (só rede interna)
+                                   │  TLS, porta 3306, liberada só para o SG do backend
+                                   └──> RDS MySQL 8.4 (sem IP público)
+   www.seudominio.com.br -> redireciona para seudominio.com.br
+   Segredos: SSM Parameter Store (/mediary/prod/*)    Logs: CloudWatch /mediary/prod (7 dias)
 ```
+
+Por que o frontend fica no mesmo servidor, e não em S3 + CloudFront:
+- **Custo extra zero:** mesmo servidor, mesmo IP, mesmo certificado.
+- **Funciona com o DNS do Registro.br:** ele só precisa de registros **A**. O CloudFront exigiria
+  CNAME/ALIAS no domínio raiz, que o DNS do Registro.br não oferece.
+- **Sem CORS para configurar:** site e API na mesma origem, o frontend chama `/api` direto.
+
+Alternativa para cortar custo depois: MySQL em contêiner na própria EC2 (t4g.small), ≈ US$ 26/mês
+em vez de ≈ 45, mas com backup por sua conta. Em `us-east-1` os preços são ~40% menores; `sa-east-1`
+tem menor latência e mantém os dados no Brasil.
 
 ### Custo estimado (sa-east-1, sob demanda, depois dos créditos)
 
@@ -77,10 +77,10 @@ Navegador ──HTTPS──> Vercel (frontend React)
 | IPv4 público fixo (Elastic IP) | 3,65 |
 | RDS db.t4g.micro MySQL (≈ US$ 0,034/h) | 24,80 |
 | Armazenamento RDS 20 GB gp3 + backup | 4–5 |
-| CloudWatch Logs (poucos MB, retenção 7 dias), Parameter Store | ≈ 0 |
-| **Total** | **≈ 45** |
+| CloudWatch Logs (poucos MB, retenção 7 dias), Parameter Store, DNS do Registro.br | ≈ 0 |
+| **Total** | **≈ 45** (≈ 4 meses cobertos por US$ 200 de créditos) |
 
-Além disso: o domínio (se você ainda não tiver um; ≈ R$ 40/ano em .com.br) e a API da Anthropic (cobrada à parte pelo uso).
+À parte: a renovação do domínio no Registro.br e a API da Anthropic (cobrada pelo uso).
 
 ### Arquivos
 
@@ -88,7 +88,8 @@ Além disso: o domínio (se você ainda não tiver um; ≈ R$ 40/ano em .com.br)
 |---|---|
 | `orcamento.yml` | Orçamento mensal com alertas por e-mail (crie **primeiro**) |
 | `cloudformation.yml` | Security groups, RDS, EC2 com IP fixo, papel IAM mínimo, grupo de logs, papel de deploy do GitHub |
-| `docker-compose.prod.yml`, `Caddyfile` | Backend + proxy HTTPS na EC2 |
+| `docker-compose.prod.yml` | Contêineres `web` (Caddy + frontend) e `backend` na EC2 |
+| `Dockerfile.web`, `Caddyfile` | Compila o frontend e configura HTTPS, `/api` e redirecionamento do `www` |
 | `servidor/atualizar.sh` | Na EC2: baixa o código, lê os segredos do Parameter Store, faz build e sobe |
 | `servidor/criar_usuario_app.sh` | Na EC2: cria o usuário do banco do app (só acesso ao banco `mediary`) |
 | `servidor/mysql.sh` | Na EC2: abre o cliente MySQL no RDS com TLS (seção 6) |
@@ -98,166 +99,242 @@ Além disso: o domínio (se você ainda não tiver um; ≈ R$ 40/ano em .com.br)
 
 ## 3. Passo a passo (o que depende de você)
 
-Use o **AWS CloudShell** (ícone `>_` no topo do console) para os comandos: ele já vem
-autenticado, roda dentro da AWS e é gratuito, então você não precisa criar chaves de acesso.
-Antes de cada comando, confira se a região no topo do console é **São Paulo (sa-east-1)**.
+Use o **AWS CloudShell** (ícone `>_` no topo do console) para os comandos: ele já vem autenticado,
+roda dentro da AWS e é gratuito. Confira sempre se a região no topo do console é **São Paulo (sa-east-1)**.
+Nos exemplos, troque `seudominio.com.br` pelo seu domínio.
 
 ### 3.1 Criar a conta e proteger o root
-1. Crie a conta em https://aws.amazon.com/ e escolha o **Paid plan** (veja a seção 1).
-2. Ative **MFA no usuário root**: menu da conta > *Security credentials* > *Assign MFA device*.
-3. Não crie chaves de acesso para o root e use o root só para tarefas de cobrança da conta.
+1. Crie a conta em https://aws.amazon.com/ e escolha o **Paid plan** (seção 1).
+2. **MFA no root:** menu da conta > *Security credentials* > *Assign MFA device*.
+3. Com o root: *Account* > *IAM user and role access to Billing information* > **Activate**.
+4. Não crie chaves de acesso para o root.
 
 ### 3.2 Usuário IAM de administração (não root)
-1. Console > **IAM** > *Users* > *Create user*: `mediary-admin`, com acesso ao console.
-2. Permissões: *Attach policies directly* > `AdministratorAccess`.
-3. Entre com esse usuário e ative MFA nele (*Security credentials* > *Assign MFA device*).
-4. A partir daqui, use sempre o `mediary-admin`.
-5. Em *Billing and Cost Management* > *Billing preferences*, ative os **alertas do Free Tier** (*Receive AWS Free Tier alerts*). Para isso, ative antes, com o root, o *IAM user access to billing information* (*Account* > *IAM user and role access to Billing information*).
+1. **IAM** > *Users* > *Create user*: `mediary-admin`, com acesso ao console e a política `AdministratorAccess`.
+2. Entre com ele, ative MFA (*Security credentials* > *Assign MFA device*) e use **só ele** daqui em diante.
+3. *Billing and Cost Management* > *Billing preferences* > ative **Receive AWS Free Tier alerts**.
 
 ### 3.3 Orçamento com alertas (ANTES de qualquer recurso)
-Console > **CloudFormation** > *Create stack* > *Upload a template file* > `deploy/aws/orcamento.yml`.
-Nome: `mediary-orcamento`. Parâmetros: seu e-mail e o limite (ex.: 10 USD). Depois confirme o e-mail
-de assinatura que a AWS enviar. Os alertas contam o consumo **sem descontar créditos**, então você
-fica sabendo do gasto real desde o primeiro dia.
+1. Baixe `deploy/aws/orcamento.yml` do GitHub (abra o arquivo > **Download raw file**).
+2. **CloudFormation** > *Create stack* > *With new resources* > *Upload a template file* > o arquivo > **Next**.
+3. Nome `mediary-orcamento`, seu e-mail, limite (ex.: `10`) > **Next** > **Next** > **Submit**.
+4. **Confirme o e-mail** que a AWS mandar (*AWS Notification - Subscription Confirmation*).
 
-### 3.4 Domínio da API (HTTPS)
-O microfone do navegador exige HTTPS, e o frontend (HTTPS na Vercel) só pode chamar uma API também em HTTPS.
-- **Recomendado:** um subdomínio seu, ex.: `api.seudominio.com.br`. Depois do passo 3.6 você cria
-  um registro **A** apontando para o `IpPublico` da stack (no Registro.br, na Vercel ou no seu DNS).
-- **Sem domínio (provisório):** use `IP-COM-TRACOS.sslip.io` (ex.: IP `54.1.2.3` → `54-1-2-3.sslip.io`).
-  É um serviço de DNS de terceiros, gratuito e sem garantia. Serve para testar, mas troque por um domínio seu.
+### 3.4 Chave da IA (Anthropic)
+1. Em **platform.claude.com** > *API keys* > *Create key*: nome `mediary-producao`. Copie a chave.
+2. Em *Billing*: confira se há créditos e defina um **limite mensal de gasto**.
 
-O Caddy emite e renova o certificado (Let's Encrypt) sozinho na primeira requisição.
+### 3.5 Preparar o DNS no Registro.br (uma vez)
+Para editar os registros, o domínio precisa usar o DNS do próprio Registro.br no **modo avançado**:
+1. Entre em https://registro.br > **Domínios** > clique no domínio.
+2. Em **DNS**, confira se está usando os servidores do Registro.br. Se estiver com servidores
+   de outra empresa, troque para *Utilizar os servidores DNS do Registro.br*.
+3. Clique em **Configurar endereçamento** > **Modo avançado** > **Confirmar**.
+   A ativação pode levar alguns minutos. Quando terminar, aparece **Configurar zona DNS**.
+4. Ainda **não** crie os registros: o IP só existe depois do passo 3.7.
 
-### 3.5 Segredos no Parameter Store
-No CloudShell, crie cada parâmetro. Os comandos pedem o valor sem mostrar na tela, e assim nada fica no histórico.
-Gere senhas com `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` (sem aspas nem barras).
+Os nomes dos botões do Registro.br mudam de vez em quando. Se não achar, use a ajuda deles (registro.br/ajuda).
 
+### 3.6 Segredos no Parameter Store
+No CloudShell, crie a função auxiliar (ela some quando o CloudShell fecha; se precisar, crie de novo):
 ```bash
-salvar() { read -rsp "Valor de $1: " V; echo; aws ssm put-parameter --name "/mediary/prod/$1" --type "$2" --value "$V" --overwrite >/dev/null && echo "ok $1"; unset V; }
+salvar() { read -rsp "Valor de $1: " V; echo; aws ssm put-parameter --region sa-east-1 --name "/mediary/prod/$1" --type "$2" --value "$V" --overwrite >/dev/null && echo "ok $1"; unset V; }
 ```
+Para gerar cada senha (sem aspas, barras nem espaços):
 ```bash
-salvar db-senha-admin SecureString      # senha mestre do RDS (gerada)
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
-```bash
-salvar DATABASE_PASSWORD SecureString   # senha do usuário mediary_app (outra, gerada)
-```
-```bash
-salvar SECRET_KEY SecureString          # nova! não reaproveite a antiga
-```
-```bash
-salvar ANTHROPIC_API_KEY SecureString   # chave NOVA da Anthropic (revogue a antiga)
-```
-```bash
-salvar FRONTEND_URL String              # ex.: https://mediary.vercel.app (sem barra no fim)
-```
-```bash
-salvar API_DOMAIN String                # ex.: api.seudominio.com.br
-```
-Opcionais (só se quiser mudar os padrões): `IA_MODELO_EXTRACAO`, `IA_MODELO_RESUMO`,
-`IA_LIMITE_DIARIO_INTERPRETAR`, `IA_LIMITE_DIARIO_RESUMO` (tipo String).
-O `DATABASE_URL` vem no passo 3.6, depois que o banco existir.
+Crie, um por vez (o valor não aparece na tela):
 
-### 3.6 Criar a infraestrutura (gera custo / consome créditos)
-1. Console > **VPC** > *Your VPCs*: anote a VPC com *Default VPC = Yes*. Em *Subnets*, anote **duas**
-   subnets dessa VPC em zonas diferentes (ex.: `sa-east-1a` e `sa-east-1b`).
-2. Console > **CloudFormation** > *Create stack* > `deploy/aws/cloudformation.yml`. Nome: `mediary`.
-   Preencha VPC e subnets e mantenha o resto padrão. Marque a confirmação de criação de recursos IAM.
-   Se a conta já tiver o provedor OIDC do GitHub, use `CriarProvedorOidcGitHub=false`.
-3. Aguarde de 10 a 15 minutos (o RDS é o mais lento). Na aba **Outputs**, anote `IpPublico`, `InstanceId`,
-   `EnderecoBanco` e `PapelDeployGitHubArn`.
-4. Crie o parâmetro que faltava:
+| Comando | Valor |
+|---|---|
+| `salvar db-senha-admin SecureString` | senha gerada (mestre do RDS) |
+| `salvar DATABASE_PASSWORD SecureString` | outra senha gerada (usuário do app) |
+| `salvar SECRET_KEY SecureString` | outra senha gerada (tokens de login) |
+| `salvar ANTHROPIC_API_KEY SecureString` | a chave do passo 3.4 |
+| `salvar DOMINIO String` | só o domínio, sem `https://` e sem `www`: `seudominio.com.br` |
+
+Confira em **Systems Manager** > *Parameter Store*: os 5 devem aparecer.
+
+### 3.7 Criar a infraestrutura (a partir daqui consome créditos)
+1. **VPC** > *Your VPCs*: anote o ID da VPC com **Default VPC = Yes**. Em *Subnets*, filtre por essa
+   VPC e anote o **Subnet ID** da `sa-east-1a` e da `sa-east-1c`.
+2. Baixe `deploy/aws/cloudformation.yml` do GitHub (**Download raw file**).
+3. **CloudFormation** > *Create stack* > *With new resources (standard)* > *Upload a template file* > **Next**.
+4. *Stack name* `mediary` e os parâmetros:
+
+   | Parâmetro | Valor |
+   |---|---|
+   | `VpcId` | a VPC padrão |
+   | `SubnetIds` | as **duas** subnets (a `sa-east-1a` primeiro) |
+   | `InstanceType` / `DbInstanceClass` | `t4g.micro` / `db.t4g.micro` |
+   | `DbBackupRetentionDays` | `7` (plano pago) ou `1` (plano gratuito) |
+   | `RepoUrl` / `RepoBranch` | padrão (`main`) |
+   | `GitHubRepo` | `HelenaMieldazis/Mediary` (vazio se não for usar o deploy pelo GitHub) |
+   | `CriarProvedorOidcGitHub` | `true` |
+   | `LogRetentionDays` | `7` |
+
+5. **Next** > **Next** > na revisão, marque as **duas** caixas de IAM (a segunda: *"…with custom names"*) > **Submit**.
+6. Acompanhe a aba **Events** por 10 a 20 minutos, até **CREATE_COMPLETE**. Na aba **Outputs**, anote
+   `IpPublico`, `InstanceId`, `EnderecoBanco` e `PapelDeployGitHubArn`.
+7. No CloudShell (troque `ENDERECO_DO_BANCO`):
    ```bash
-   aws ssm put-parameter --name /mediary/prod/DATABASE_URL --type String --overwrite --value "mysql://mediary_app@ENDERECO_DO_BANCO:3306/mediary"
+   aws ssm put-parameter --region sa-east-1 --name /mediary/prod/DATABASE_URL --type String --overwrite --value "mysql://mediary_app@ENDERECO_DO_BANCO:3306/mediary"
    ```
-5. Aponte o DNS do `API_DOMAIN` para o `IpPublico` (registro A).
 
-### 3.7 Primeiro deploy
-Console > **EC2** > selecione `mediary-backend` > *Connect* > **Session Manager** > *Connect*. Não há SSH aberto.
-```bash
-sudo /opt/mediary/deploy/aws/servidor/criar_usuario_app.sh
-```
-```bash
-sudo /opt/mediary/deploy/aws/servidor/atualizar.sh main
-```
-O script termina com `OK: backend respondendo`. Teste de fora: `https://API_DOMAIN/api/health`.
+**Se a stack falhar**, veja a primeira linha vermelha em *Events*:
 
-### 3.8 Migrar os dados do Supabase (controlado)
-Ainda na sessão da EC2. **Nada é apagado no Supabase.** Faça primeiro um backup no painel do Supabase.
-```bash
-sudo docker exec -it mediary-backend sh
-```
-Dentro do contêiner:
-```bash
-pip install --user -q psycopg2-binary
-```
-```bash
-read -rsp "URL do Postgres (Supabase): " PG_DATABASE_URL; export PG_DATABASE_URL; echo
-```
-```bash
-python scripts/migrar_postgres_para_mysql.py contar
-```
-```bash
-python scripts/migrar_postgres_para_mysql.py exportar --arquivo /tmp/dump/mediary.json.gz
-```
-```bash
-python scripts/migrar_postgres_para_mysql.py importar --arquivo /tmp/dump/mediary.json.gz --simular
-```
-```bash
-python scripts/migrar_postgres_para_mysql.py importar --arquivo /tmp/dump/mediary.json.gz
-```
-```bash
-python scripts/migrar_postgres_para_mysql.py contar
-```
-```bash
-rm -rf /tmp/dump; exit
-```
-O destino já vem do `DATABASE_URL`/`DATABASE_PASSWORD` do contêiner. O `importar` só roda em
-tabelas vazias e confere as contagens antes de gravar.
+| Erro | Correção |
+|---|---|
+| `Parameter ... db-senha-admin ... not found` | Crie o parâmetro em **sa-east-1** (3.6). |
+| *backup retention ... free tier* | `DbBackupRetentionDays = 1`. |
+| `Provider with url ... already exists` | `CriarProvedorOidcGitHub = false`. |
+| `instance type ... not supported in ... Availability Zone` | Ponha a `sa-east-1c` como primeira subnet. |
 
-**Atenção:** o backend cria as tabelas ao subir. Se alguém se cadastrar no app novo antes da migração,
-o `importar` recusa (o destino já tem dados). Migre antes de divulgar a nova URL.
+Depois de uma falha, **delete a stack** (`ROLLBACK_COMPLETE`) antes de tentar de novo. Se ela travar em
+`ROLLBACK_FAILED`/`DELETE_FAILED` por causa do banco: **RDS** > `mediary-mysql` > *Modify* > desmarque
+*Enable deletion protection* > *Apply immediately* > delete a stack de novo.
 
-### 3.9 Frontend na Vercel
-Vercel > projeto > *Settings* > *Environment Variables*: `VITE_API_URL = https://API_DOMAIN`.
-Depois, *Deployments* > *Redeploy*. Confira que o `FRONTEND_URL` do passo 3.5 é exatamente a URL da Vercel.
+### 3.8 Apontar o domínio (Registro.br)
+1. Registro.br > **Domínios** > o domínio > **Configurar zona DNS** (ou *Editar zona*).
+2. **Nova entrada** > Tipo **A** > Nome **vazio** (domínio raiz) > Dados/IP = `IpPublico` > adicionar.
+3. **Nova entrada** > Tipo **A** > Nome **`www`** > Dados/IP = `IpPublico` > adicionar.
+4. Se já existirem registros A ou CNAME antigos para o raiz ou para `www` (ex.: apontando para a Vercel),
+   **apague-os**. Não mexa em registros MX/TXT de e-mail.
+5. **Salvar alterações**.
+6. No CloudShell, confira (deve mostrar o `IpPublico`; pode levar de minutos a algumas horas):
+   ```bash
+   dig +short seudominio.com.br
+   ```
+   ```bash
+   dig +short www.seudominio.com.br
+   ```
 
-### 3.10 Deploy pelo GitHub Actions (opcional)
+### 3.9 Primeiro deploy
+1. **EC2** > *Instances* > `mediary-backend` > **Connect** > **Session Manager** > **Connect**.
+   Se o botão estiver cinza, espere 5 minutos (o agente está registrando).
+2. Confira a instalação inicial (deve terminar com `Primeiro deploy falhou...`, o que é **esperado**):
+   ```bash
+   sudo tail -3 /var/log/mediary-bootstrap.log
+   ```
+3. Crie o usuário do app no MySQL (esperado: `Usuário mediary_app pronto...`):
+   ```bash
+   sudo /opt/mediary/deploy/aws/servidor/criar_usuario_app.sh
+   ```
+4. Suba o site e a API. Leva de 10 a 15 minutos na primeira vez (compila o backend e o frontend):
+   ```bash
+   sudo /opt/mediary/deploy/aws/servidor/atualizar.sh main
+   ```
+   Esperado no final: `OK: backend respondendo. Site: https://seudominio.com.br ...`.
+   Se aparecer `Falta /mediary/prod/XXXX`, crie o parâmetro e rode de novo.
+5. Abra **https://seudominio.com.br** no navegador: o site com cadeado. Teste também
+   `https://seudominio.com.br/api/health` (`{"status":"ok"}`) e `http://www.seudominio.com.br`
+   (deve ir para `https://seudominio.com.br`).
+
+Se o cadeado não vier, o DNS ainda não aponta para o IP. Veja o log do servidor web:
+```bash
+sudo docker logs mediary-web --tail 30
+```
+`NXDOMAIN` ou `challenge failed` = DNS ainda propagando. Espere e reinicie:
+```bash
+sudo docker restart mediary-web
+```
+
+### 3.10 Migrar os dados do Supabase (controlado)
+Faça **antes** de divulgar o site novo: a importação só roda com o banco vazio. Nada é apagado no Supabase.
+1. Faça um backup no Supabase (*Database* > *Backups*).
+2. Pegue a URL em Supabase > **Connect** > *Connection string* > **Session pooler** (endereço com
+   `pooler.supabase.com:5432`). A *Direct connection* é só IPv6 e não funciona daqui. Troque
+   `[YOUR-PASSWORD]` pela senha (se tiver `@ / ? # %`, codifique com
+   `python3 -c "import urllib.parse,getpass; print(urllib.parse.quote(getpass.getpass('senha: '), safe=''))"`).
+3. Se o Supabase tiver *Network restrictions*, libere `IpPublico/32`.
+4. Na sessão da EC2:
+   ```bash
+   sudo docker exec -it mediary-backend sh
+   ```
+   ```bash
+   pip install --user -q psycopg2-binary
+   ```
+   ```bash
+   read -rsp "URL do Supabase: " PG_DATABASE_URL; export PG_DATABASE_URL; echo
+   ```
+   ```bash
+   python scripts/migrar_postgres_para_mysql.py contar
+   ```
+   O MySQL tem que estar com **0** em tudo. Se não estiver, pare (alguém já se cadastrou).
+   ```bash
+   python scripts/migrar_postgres_para_mysql.py exportar --arquivo /tmp/dump/mediary.json.gz
+   ```
+   ```bash
+   python scripts/migrar_postgres_para_mysql.py importar --arquivo /tmp/dump/mediary.json.gz --simular
+   ```
+   ```bash
+   python scripts/migrar_postgres_para_mysql.py importar --arquivo /tmp/dump/mediary.json.gz
+   ```
+   ```bash
+   python scripts/migrar_postgres_para_mysql.py contar
+   ```
+   ```bash
+   rm -rf /tmp/dump; exit
+   ```
+5. Confira direto no MySQL:
+   ```bash
+   sudo /opt/mediary/deploy/aws/servidor/mysql.sh app -e "SELECT COUNT(*) FROM Usuarios; SELECT COUNT(*) FROM Sintomas;"
+   ```
+
+### 3.11 Deploy pelo GitHub Actions (opcional)
 GitHub > *Settings* > *Environments* > *New environment* `producao`:
-- marque *Required reviewers* (você), para nenhum deploy sair sem aprovação;
+- marque *Required reviewers* (você);
 - *Environment variables*: `AWS_DEPLOY_ROLE_ARN` (output `PapelDeployGitHubArn`), `AWS_REGION` (`sa-east-1`),
   `AWS_INSTANCE_ID` (output `InstanceId`).
 
-Para publicar: *Actions* > **Deploy AWS** > *Run workflow*. Não existe nenhuma chave da AWS no GitHub: o acesso é por OIDC
-e o papel só pode mandar a EC2 rodar o `atualizar.sh`.
+Para publicar: *Actions* > **Deploy AWS** > *Run workflow* > aprove.
+
+### 3.12 Desligar o que é antigo (só depois que a seção 4 passar inteira)
+1. Anthropic: revogue a chave **antiga** (*API keys* > *Delete*).
+2. Vercel: *Settings* > *General* > **Pause/Delete project** (e remova o domínio de lá, se estava ligado).
+3. Render: serviço do backend > *Settings* > **Suspend Web Service** (reversível).
+4. Supabase: troque a senha do banco (*Database* > *Settings* > *Reset database password*) e, depois
+   de 1 a 2 semanas com tudo funcionando, **Pause project**.
 
 ---
 
 ## 4. Checklist de validação pós-deploy
 
-- [ ] `https://API_DOMAIN/api/health` → `{"status":"ok"}`, com cadeado válido no navegador
-- [ ] `http://API_DOMAIN/api/health` redireciona para HTTPS
-- [ ] Cadastro de usuário novo pelo app da Vercel
-- [ ] Login e logout; login com e-mail em maiúsculas também funciona
-- [ ] Registrar, editar (a hora exibida na edição é a mesma registrada) e excluir um sintoma; o calendário marca o dia
-- [ ] Usuários migrados conseguem entrar com a senha antiga e veem os próprios registros (`contar` bate com o Supabase)
-- [ ] Relatório em PDF (sem IA) baixa e abre, com acentos corretos
-- [ ] IA: o consentimento aparece no primeiro uso; registro por **texto** gera o cartão Salvar/Corrigir
-- [ ] IA: registro por **voz** no celular (Chrome/Android ou Safari/iOS), em HTTPS, com permissão de microfone
-- [ ] Resumo para a consulta: gera o texto, permite editar e baixar o PDF
+- [ ] `https://seudominio.com.br` abre o app com cadeado válido; `www` e `http` redirecionam para ele
+- [ ] `https://seudominio.com.br/api/health` → `{"status":"ok"}`
+- [ ] Login de um usuário **migrado** (senha antiga) mostra os sintomas antigos; `contar` bate com o Supabase
+- [ ] Cadastro de usuário novo
+- [ ] Registrar, editar (a hora na edição é a registrada) e excluir um sintoma; o calendário marca o dia
+- [ ] Relatório em PDF (sem IA) com acentos corretos
+- [ ] IA: o botão do assistente aparece; o consentimento aparece no primeiro uso
+- [ ] IA por **texto**: "ontem à noite tive dor de cabeça forte por duas horas" gera o cartão; **Salvar** grava
+- [ ] IA pergunta o que falta: "tô com náusea" → ela pergunta quando começou
+- [ ] IA por **voz** no celular (Chrome/Android ou Safari/iOS), com permissão de microfone
+- [ ] Resumo para a consulta (últimos 30 dias): gera, editar uma frase, baixar o PDF com a edição
 - [ ] Revogar o consentimento em Configurações bloqueia a IA
-- [ ] CORS: abrir `https://API_DOMAIN/api/me` a partir de outro site não funciona (só a URL da Vercel)
-- [ ] RDS: em *RDS > mediary-mysql > Connectivity*, *Publicly accessible = No*
-- [ ] CloudWatch > *Log groups* > `/mediary/prod`: retenção de 7 dias, sem senhas, tokens nem descrições de sintomas
-- [ ] *Billing > Budgets*: orçamento `mediary-mensal` ativo e e-mail confirmado
-- [ ] `sudo /opt/mediary/deploy/aws/servidor/mysql.sh app -e "SELECT COUNT(*) FROM Usuarios"` mostra o mesmo total do Supabase
+- [ ] Instalar como app (PWA) no celular funciona
+- [ ] Painel da Anthropic > *Usage* mostra as chamadas
+- [ ] RDS: *Publicly accessible = No*
+- [ ] CloudWatch > `/mediary/prod`: retenção de 7 dias, sem senhas, tokens nem descrições de sintomas
+- [ ] *Billing > Budgets*: orçamento ativo e e-mail confirmado
+
+**Se a IA não aparecer ou falhar**, na sessão da EC2:
+```bash
+sudo grep -c "^ANTHROPIC_API_KEY=" /run/mediary/backend.env
+```
+```bash
+sudo docker logs mediary-backend --tail 40 2>&1 | grep -i "ia\|erro"
+```
+`0` no primeiro = parâmetro faltando. `AuthenticationError (401)` = chave errada. Erro 400 sobre crédito =
+sem saldo na Anthropic. Depois de corrigir com `salvar ANTHROPIC_API_KEY SecureString`, rode o `atualizar.sh` de novo.
 
 ## 5. Operação
 
-- **Logs:** CloudWatch > *Log groups* > `/mediary/prod` (streams `backend` e `caddy`).
-- **Atualizar:** GitHub Actions (3.10) ou, na sessão da EC2, `sudo /opt/mediary/deploy/aws/servidor/atualizar.sh main`.
+- **Logs:** CloudWatch > *Log groups* > `/mediary/prod` (streams `backend` e `web`).
+- **Atualizar:** GitHub Actions (3.11) ou, na sessão da EC2, `sudo /opt/mediary/deploy/aws/servidor/atualizar.sh main`.
 - **Voltar uma versão:** `atualizar.sh <tag-ou-commit>`.
-- **Trocar um segredo:** `salvar NOME SecureString` (3.5) e rodar o `atualizar.sh` de novo.
+- **Trocar um segredo:** `salvar NOME SecureString` (3.6) e rodar o `atualizar.sh` de novo.
 - **Pausar o custo:** parar a EC2 e o RDS reduz o custo, mas o RDS religa sozinho após 7 dias e o IP fixo continua sendo cobrado.
 - **Apagar tudo:** antes, desligue *Deletion protection* no RDS. Ao apagar a stack, um snapshot final do banco é mantido (e cobrado) até você apagá-lo.
 
